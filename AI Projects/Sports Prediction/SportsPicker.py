@@ -54,6 +54,7 @@ def get_player_stats(player_id):
         return None
     
 try:
+    print("Fetching NFL teams...")
     get_nfl_teams()
 except Exception as e:
     print(f"An error occurred: {e}")
