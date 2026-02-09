@@ -25,7 +25,7 @@ def get_matrix(rows, cols):
         while True:
             try:
                 # Read a row of input, split it into values, and convert to integers
-                row = list(map(int, input(f"Row {i + 1}: ").split()))
+                row = list(map(float, input(f"Row {i + 1}: ").split()))
                 if len(row) != cols:
                     # If the number of values does not match the number of columns, prompt again
                     print(f"Please enter exactly {cols} values.")
@@ -35,7 +35,7 @@ def get_matrix(rows, cols):
             except ValueError:
                 #Return error if non-integer values input
                 print("Please enter valid numbers.")
-    return np.array(matrix) #Convert list of lists to a numpy array for easier manipulation
+    return np.array(matrix, dtype=float) #Convert list of lists to a numpy array for easier manipulation
 
 # Function to perform row swapping
 def swap(matrix, i, j):
@@ -55,32 +55,91 @@ def shear(matrix, i, j, k):
 
 def display_matrix(matrix):
     # Display the matrix in a readable format
+    def fmt(x):
+        return str(int(round(x))) if np.isclose(x, round(x)) else str(x)
+    
     print("Current Matrix:")
     for row in matrix:
-        print(" ".join(map(str, row)))
+        if len(row) > 1:
+            left = " ".join(fmt(v) for v in row[:-1])  # All elements except the last one
+            right = fmt(row[-1])  # The last element
+            print(f"{left} | {right}")  # Print the row with a vertical bar separating the last element
+        else:
+            print(f"[{fmt(row[0])}]")  # If there's only one element, just print it
+
+def rref_test(matrix):
+    rows, cols = matrix.shape
+    lead = 0 # Initialize the leading column index to 0
+    for c in range(cols-1):
+        if lead >= rows:
+            # If the leading row index exceeds the number of rows, return the matrix
+            return matrix 
+        i = c # Initialize the row index to the current column
+        if matrix[i][c] != 1: # If the leading entry is zero, find a row below it with a non-zero entry
+            if matrix[i][c] == 0:
+                for r in range(i + 1, rows):
+                    if matrix[r][c] != 0:
+                        matrix = swap(matrix, i, r) # Swap the current row with the row containing the non-zero entry
+                        print(f"Swapped row {i} with row {r}:")
+                        display_matrix(matrix)
+                    else:
+                        c = c + 1 # Move to the next column if the current column is zero
+                        if c >= (cols-1):
+                            return matrix
+            else:
+                scale_factor = 1 / matrix[i][c] # Calculate the factor to scale the row to make the leading entry 1
+                matrix = scale(matrix, i, scale_factor) # Scale the current row to make the leading entry 1
+                print(f"Scaled row {i} by {scale_factor} to make leading entry 1:")
+                display_matrix(matrix)
+        else: # If the leading entry is 1, eliminate the entries below it
+            for r in range(rows):
+                if r != i: # For each row other than the current row, eliminate the leading entry
+                    shear_factor = -matrix[r][c] # Calculate the factor to eliminate the leading entry
+                    matrix = shear(matrix, r, i, shear_factor) # Add a multiple of the current row to eliminate the leading entry
+                    print(f"Added {shear_factor} times row {i} to row {r} to eliminate leading entry:")
+                    display_matrix(matrix)
+            lead += 1 # Move to the next leading column
+    return matrix
+
+        
 
 def rref(matrix):
-    rows, cols = matrix.shape # Get the number of rows and columns in the matrix
+    rows, cols = matrix.shape
     lead = 0 # Initialize the leading column index to 0
-    for r in range(rows):
-        if lead >= cols:
-            return matrix # If the leading column index exceeds the number of columns, return the matrix
-        i = r # Initialize the row index to the current row
-        while matrix[i][lead] == 0: # If the leading entry is zero, find a row below it with a non-zero entry
-            i += 1
-            if i == rows: # If we have checked all rows and found no non-zero entry, move to the next column
-                i = r
-                lead += 1
-                if cols == lead: # If the leading column index exceeds the number of columns,
-                    return matrix
-        matrix = swap(matrix, i, r) # Swap the current row with the row containing the non-zero entry
-        lv = matrix[r][lead] # Get the leading value of the current row
-        matrix = scale(matrix, r, 1 / lv) # Scale the current row to make the leading entry 1
-        for i in range(rows):
-            if i != r: # For each row other than the current row, eliminate the leading entry
-                lv = matrix[i][lead] # Get the leading value of the current row
-                matrix = shear(matrix, i, r, -lv) # Add a multiple of the current row to eliminate the leading entry
-        lead += 1 # Move to the next leading column
+    for c in range(cols-1):
+        if lead >= rows:
+            # If the leading row index exceeds the number of rows, return the matrix
+            return matrix 
+        if c > lead:
+            i = lead # Initialize the row index to the current leading row
+            lead = c # Update the leading column index to the current column
+        else:
+            i = lead # Initialize the row index to the current leading row3
+        while c == lead: # Loop until we find a leading entry in the current column
+            if matrix[i][c] == 0: # If the leading entry is zero, find a row below it with a non-zero entry
+                for r in range(i + 1, rows):
+                    if matrix[r][c] != 0:
+                        matrix = swap(matrix, i, r) # Swap the current row with the row containing the non-zero entry
+                        print(f"Swapped row {i} with row {r}:")
+                        display_matrix(matrix)
+                        break
+                    else:
+                        c += 1 # Move to the next column if the current column is zero
+                        if c >= (cols-1):
+                            return matrix
+            elif matrix[i][c] != 1 and matrix[i][c] != 0: # If the leading entry isn't 1 or 0, scale the row to make it 1
+                scale_factor = 1 / matrix[i][c] # Calculate the factor to scale the row to make the leading entry 1
+                matrix = scale(matrix, i, scale_factor) # Scale the current row to make the leading entry 1
+                print(f"Scaled row {i} by {scale_factor} to make leading entry 1:")
+                display_matrix(matrix)
+            else: # If the leading entry is 1, eliminate the entries below it
+                for r in range(rows):
+                    if r != i: # For each row other than the current row, eliminate the leading entry
+                        shear_factor = -matrix[r][c] # Calculate the factor to eliminate the leading entry
+                        matrix = shear(matrix, r, i, shear_factor) # Add a multiple of the current row to eliminate the leading entry
+                        print(f"Added {shear_factor} times row {i} to row {r} to eliminate leading entry:")
+                        display_matrix(matrix)
+                lead += 1 # Move to the next leading column
     return matrix
 
 def main():
