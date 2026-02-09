@@ -67,42 +67,6 @@ def display_matrix(matrix):
         else:
             print(f"[{fmt(row[0])}]")  # If there's only one element, just print it
 
-def rref_test(matrix):
-    rows, cols = matrix.shape
-    lead = 0 # Initialize the leading column index to 0
-    for c in range(cols-1):
-        if lead >= rows:
-            # If the leading row index exceeds the number of rows, return the matrix
-            return matrix 
-        i = c # Initialize the row index to the current column
-        if matrix[i][c] != 1: # If the leading entry is zero, find a row below it with a non-zero entry
-            if matrix[i][c] == 0:
-                for r in range(i + 1, rows):
-                    if matrix[r][c] != 0:
-                        matrix = swap(matrix, i, r) # Swap the current row with the row containing the non-zero entry
-                        print(f"Swapped row {i} with row {r}:")
-                        display_matrix(matrix)
-                    else:
-                        c = c + 1 # Move to the next column if the current column is zero
-                        if c >= (cols-1):
-                            return matrix
-            else:
-                scale_factor = 1 / matrix[i][c] # Calculate the factor to scale the row to make the leading entry 1
-                matrix = scale(matrix, i, scale_factor) # Scale the current row to make the leading entry 1
-                print(f"Scaled row {i} by {scale_factor} to make leading entry 1:")
-                display_matrix(matrix)
-        else: # If the leading entry is 1, eliminate the entries below it
-            for r in range(rows):
-                if r != i: # For each row other than the current row, eliminate the leading entry
-                    shear_factor = -matrix[r][c] # Calculate the factor to eliminate the leading entry
-                    matrix = shear(matrix, r, i, shear_factor) # Add a multiple of the current row to eliminate the leading entry
-                    print(f"Added {shear_factor} times row {i} to row {r} to eliminate leading entry:")
-                    display_matrix(matrix)
-            lead += 1 # Move to the next leading column
-    return matrix
-
-        
-
 def rref(matrix):
     rows, cols = matrix.shape
     lead = 0 # Initialize the leading column index to 0
