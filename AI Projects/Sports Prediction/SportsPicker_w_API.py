@@ -96,7 +96,37 @@ def print_team_codes():
     print("\n--- NFL Team Codes ---\n")
     for team, code in NFL_TEAMS_NAME_TO_CODE.items():
         print(f"{team}: {code}")
-#Method to get team IDs from the API
+#Method to get Team Statistics from the API
+def get_team_stats(team_id, season):
+    try:
+        # Construct the URL with the required parameters
+        path = f"/games/statistics/teams?id=1985"
+        
+        conn.request("GET", path, headers=headers)
+        res = conn.getresponse()
+        data = res.read().decode("utf-8")
+        
+        stats_json = json.loads(data)
+        
+        # The core data is usually inside the 'response' key
+        if not stats_json.get('response'):
+            print("Warning: API returned 0 results. Check your Season or Team ID.")
+            print(f"API Message: {stats_json.get('errors')}")
+        else:
+            stats_df = pd.json_normalize(stats_json['response'])
+
+            try:
+                subset = stats_df[['team.id', 'team.name', 'statistics.passing.total', 'statistics.rushings.total', 'statistics.points_against.total']]
+                print(f"\n--- Statistics for Team ID {team_id} in Season {season} ---\n")
+                print(subset.head())
+                return subset
+            except KeyError as ke:
+                print(f"KeyError: {ke}. Available columns are: {stats_df.columns.tolist()}")
+                return None
+
+    except Exception as e:
+        print(f"Error fetching stats: {e}")
+        return None
 """
 def get_nfl_teams():
     conn.request("GET", "/teams?id=1", headers=headers)
@@ -128,7 +158,7 @@ def get_player_stats(player_id):
         print(f"Error fetching data for player {player_id}: {response.status_code}")
         return None
 """
-try:
+def placeholder():
     print("Fetching NFL teams...")
     conn.request("GET", "/teams?league=1&season=2024", headers=headers)
     res = conn.getresponse()
@@ -148,6 +178,9 @@ try:
             print(subset.head(32))
         except KeyError as ke:
             print(f"KeyError: {ke}. Available columns are: {teams_df.columns.tolist()}")
+
+try:
+    get_team_stats(NFL_TEAMS_CODE_TO_ID["KC"], 2024)
                   
 except Exception as e:
     print(f"An error occurred: {e}")
