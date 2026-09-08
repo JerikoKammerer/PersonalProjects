@@ -1,0 +1,481 @@
+// cs2mv - open and view CS2 matches from a share code.
+//
+//   cs2mv serve [--port 8080] [--web <dir>] [--cache <dir>]
+//   cs2mv decode CSGO-xxxxx-xxxxx-xxxxx-xxxxx-xxxxx
+//   cs2mv encode <matchid> <outcomeid> <token>
+//   cs2mv add <share code> <demo path or http URL>
+//   cs2mv list
+//   cs2mv parse <demo.dem | demo.dem.bz2 | share code> [--pretty]
+//   cs2mv inspect <demo.dem>
+//   cs2mv fetch <url> <dest.dem>
+//   cs2mv gc-request <share code>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <iostream>
+#include <mutex>
+#include <string>
+#include <vector>
+
+#include "cs2mv/demo.h"
+#include "cs2mv/gc.h"
+#include "cs2mv/http_server.h"
+#include "cs2mv/locator.h"
+#include "cs2mv/match.h"
+#include "cs2mv/parser.h"
+#include "cs2mv/sharecode.h"
+
+namespace {
+
+using namespace cs2mv;
+
+struct Options {
+  int port = 8080;
+  std::string bind_address = "127.0.0.1";
+  std::string web_root = "web";
+  std::string cache_dir;
+  std::string index_path;
+  bool pretty = false;
+  bool no_download = false;
+};
+
+void PrintUsage() {
+  std::cout <<
+      "cs2mv - view Counter-Strike 2 matches from a share code\n"
+      "\n"
+      "  cs2mv serve [--port N] [--bind ADDR] [--web DIR] [--cache DIR]\n"
+      "        Start the local web UI (default http://127.0.0.1:8080).\n"
+      "  cs2mv decode CSGO-xxxxx-xxxxx-xxxxx-xxxxx-xxxxx\n"
+      "        Show the match id, outcome id and token inside a share code.\n"
+      "  cs2mv encode <matchid> <outcomeid> <token>\n"
+      "        Build a share code from its three fields.\n"
+      "  cs2mv add <share code|match id> <demo path or http URL>\n"
+      "        Tell the viewer where a match's demo lives.\n"
+      "  cs2mv list\n"
+      "        Show the demo index.\n"
+      "  cs2mv parse <demo file | share code> [--pretty]\n"
+      "        Parse a demo and print the match as JSON.\n"
+      "  cs2mv inspect <demo file>\n"
+      "        Report which frames, messages and game events a demo contains.\n"
+      "  cs2mv fetch <http URL> <destination.dem>\n"
+      "        Download a demo, unpacking .bz2 on the way.\n"
+      "  cs2mv gc-request <share code>\n"
+      "        Print the game coordinator request bytes for this share code.\n"
+      "\n"
+      "Common flags:\n"
+      "  --cache DIR    where downloaded demos are kept\n"
+      "  --index FILE   the share code -> demo mapping (default <cache>/index.txt)\n"
+      "  --pretty       indent JSON output\n"
+      "  --no-download  never fetch over the network\n";
+}
+
+// Pulls recognised flags out of `args`, leaving positional arguments behind.
+bool ParseFlags(std::vector<std::string>* args, Options* options,
+                std::string* error) {
+  std::vector<std::string> positional;
+  for (std::size_t i = 0; i < args->size(); ++i) {
+    const std::string& a = (*args)[i];
+    auto value = [&](const char* name) -> bool {
+      if (i + 1 >= args->size()) {
+        *error = std::string("missing value for ") + name;
+        return false;
+      }
+      return true;
+    };
+    if (a == "--port") {
+      if (!value("--port")) return false;
+      options->port = std::atoi((*args)[++i].c_str());
+    } else if (a == "--bind") {
+      if (!value("--bind")) return false;
+      options->bind_address = (*args)[++i];
+    } else if (a == "--web") {
+      if (!value("--web")) return false;
+      options->web_root = (*args)[++i];
+    } else if (a == "--cache") {
+      if (!value("--cache")) return false;
+      options->cache_dir = (*args)[++i];
+    } else if (a == "--index") {
+      if (!value("--index")) return false;
+      options->index_path = (*args)[++i];
+    } else if (a == "--pretty") {
+      options->pretty = true;
+    } else if (a == "--no-download") {
+      options->no_download = true;
+    } else if (a == "-h" || a == "--help") {
+      PrintUsage();
+      std::exit(0);
+    } else if (a.rfind("--", 0) == 0) {
+      *error = "unknown flag " + a;
+      return false;
+    } else {
+      positional.push_back(a);
+    }
+  }
+  args->swap(positional);
+  return true;
+}
+
+ResolveOptions MakeResolveOptions(const Options& options) {
+  ResolveOptions resolve;
+  resolve.cache_dir = options.cache_dir.empty() ? DefaultCacheDir() : options.cache_dir;
+  resolve.index_path = options.index_path;
+  resolve.allow_download = !options.no_download;
+  return resolve;
+}
+
+bool FileExists(const std::string& path) {
+  std::ifstream f(path, std::ios::binary);
+  return static_cast<bool>(f);
+}
+
+// A target is treated as a share code when it decodes as one and there is no
+// file by that name, so an oddly named demo still wins.
+bool LooksLikeShareCode(const std::string& s) {
+  if (FileExists(s)) return false;
+  ShareCode ignored;
+  return DecodeShareCode(s, &ignored, nullptr);
+}
+
+// Loads a match from either a demo file path or a share code.
+bool LoadMatch(const std::string& target, const Options& options, Match* match,
+               std::string* error) {
+  std::string demo_path = target;
+
+  if (LooksLikeShareCode(target)) {
+    ShareCode code;
+    if (!DecodeShareCode(target, &code, error)) return false;
+    ResolveOptions resolve = MakeResolveOptions(options);
+    resolve.progress = [](std::uint64_t done, std::uint64_t total) {
+      if (total > 0) {
+        std::fprintf(stderr, "\rdownloading %llu/%llu MB",
+                     static_cast<unsigned long long>(done >> 20),
+                     static_cast<unsigned long long>(total >> 20));
+      } else {
+        std::fprintf(stderr, "\rdownloading %llu MB",
+                     static_cast<unsigned long long>(done >> 20));
+      }
+    };
+    if (!ResolveDemo(code, target, resolve, &demo_path, error)) return false;
+    std::fprintf(stderr, "\r");
+
+    match->share_code = target;
+    match->match_id = code.match_id;
+    match->outcome_id = code.outcome_id;
+    match->token = code.token;
+  }
+
+  DemoReader reader;
+  if (!reader.Open(demo_path, error)) return false;
+  match->demo_source = demo_path;
+  return ParseDemo(&reader, ParseOptions(), match, error);
+}
+
+int CommandDecode(const std::vector<std::string>& args) {
+  if (args.empty()) {
+    std::cerr << "usage: cs2mv decode <share code>\n";
+    return 2;
+  }
+  ShareCode code;
+  std::string error;
+  if (!DecodeShareCode(args[0], &code, &error)) {
+    std::cerr << "error: " << error << "\n";
+    return 1;
+  }
+  std::string canonical;
+  NormalizeShareCode(args[0], &canonical, nullptr);
+  std::cout << "share code : " << canonical << "\n"
+            << "match id   : " << code.match_id << "\n"
+            << "outcome id : " << code.outcome_id << "\n"
+            << "token      : " << code.token << "\n";
+  return 0;
+}
+
+int CommandEncode(const std::vector<std::string>& args) {
+  if (args.size() < 3) {
+    std::cerr << "usage: cs2mv encode <matchid> <outcomeid> <token>\n";
+    return 2;
+  }
+  ShareCode code;
+  code.match_id = std::strtoull(args[0].c_str(), nullptr, 10);
+  code.outcome_id = std::strtoull(args[1].c_str(), nullptr, 10);
+  code.token = static_cast<std::uint16_t>(std::strtoul(args[2].c_str(), nullptr, 10));
+  std::cout << EncodeShareCode(code) << "\n";
+  return 0;
+}
+
+int CommandAdd(const std::vector<std::string>& args, const Options& options) {
+  if (args.size() < 2) {
+    std::cerr << "usage: cs2mv add <share code|match id> <demo path or URL>\n";
+    return 2;
+  }
+  std::string key = args[0];
+  std::string canonical;
+  if (NormalizeShareCode(args[0], &canonical, nullptr)) key = canonical;
+
+  const ResolveOptions resolve = MakeResolveOptions(options);
+  const std::string index_path = resolve.index_path.empty()
+                                     ? resolve.cache_dir + "/index.txt"
+                                     : resolve.index_path;
+  DemoIndex index;
+  std::string error;
+  if (!index.Load(index_path, &error)) {
+    std::cerr << "error: " << error << "\n";
+    return 1;
+  }
+  index.Set(key, args[1]);
+  if (!index.Save(index_path, &error)) {
+    std::cerr << "error: " << error << "\n";
+    return 1;
+  }
+  std::cout << "recorded " << key << " -> " << args[1] << "\n"
+            << "index: " << index_path << "\n";
+  return 0;
+}
+
+int CommandList(const Options& options) {
+  const ResolveOptions resolve = MakeResolveOptions(options);
+  const std::string index_path = resolve.index_path.empty()
+                                     ? resolve.cache_dir + "/index.txt"
+                                     : resolve.index_path;
+  DemoIndex index;
+  std::string error;
+  if (!index.Load(index_path, &error)) {
+    std::cerr << "error: " << error << "\n";
+    return 1;
+  }
+  if (index.entries().empty()) {
+    std::cout << "the index at " << index_path << " is empty\n";
+    return 0;
+  }
+  for (const auto& entry : index.entries()) {
+    std::cout << entry.first << "\t" << entry.second << "\n";
+  }
+  return 0;
+}
+
+int CommandParse(const std::vector<std::string>& args, const Options& options) {
+  if (args.empty()) {
+    std::cerr << "usage: cs2mv parse <demo file | share code>\n";
+    return 2;
+  }
+  Match match;
+  std::string error;
+  if (!LoadMatch(args[0], options, &match, &error)) {
+    std::cerr << "error: " << error << "\n";
+    return 1;
+  }
+  std::cout << MatchToJson(match, options.pretty) << "\n";
+  return 0;
+}
+
+int CommandInspect(const std::vector<std::string>& args) {
+  if (args.empty()) {
+    std::cerr << "usage: cs2mv inspect <demo file>\n";
+    return 2;
+  }
+  DemoReader reader;
+  std::string error;
+  if (!reader.Open(args[0], &error)) {
+    std::cerr << "error: " << error << "\n";
+    return 1;
+  }
+  DemoInventory inventory;
+  const bool ok = InspectDemo(&reader, &inventory, &error);
+
+  std::cout << "frames\n";
+  for (const auto& entry : inventory.frames) {
+    std::cout << "  " << DemoCommandName(entry.first) << " (" << entry.first
+              << ") x" << entry.second << "\n";
+  }
+  std::cout << "  compressed: " << inventory.compressed_frames << "\n"
+            << "  payload bytes: " << inventory.total_bytes << "\n"
+            << "  last tick: " << inventory.last_tick << "\n";
+
+  std::cout << "packet messages\n";
+  for (const auto& entry : inventory.messages) {
+    std::cout << "  kind " << entry.first << " x" << entry.second << "\n";
+  }
+  std::cout << "string tables\n";
+  for (const auto& entry : inventory.string_tables) {
+    std::cout << "  " << entry.first << " x" << entry.second << "\n";
+  }
+  std::cout << "game events\n";
+  for (const auto& entry : inventory.events) {
+    std::cout << "  " << entry.first << " x" << entry.second << "\n";
+  }
+  if (!ok) {
+    std::cerr << "warning: " << error << "\n";
+    return 1;
+  }
+  return 0;
+}
+
+int CommandFetch(const std::vector<std::string>& args, const Options& options) {
+  if (args.size() < 2) {
+    std::cerr << "usage: cs2mv fetch <http URL> <destination.dem>\n";
+    return 2;
+  }
+  ResolveOptions resolve = MakeResolveOptions(options);
+  resolve.progress = [](std::uint64_t done, std::uint64_t total) {
+    std::fprintf(stderr, "\r%llu/%llu MB",
+                 static_cast<unsigned long long>(done >> 20),
+                 static_cast<unsigned long long>(total >> 20));
+  };
+  std::string error;
+  if (!FetchDemo(args[0], args[1], resolve, &error)) {
+    std::fprintf(stderr, "\n");
+    std::cerr << "error: " << error << "\n";
+    return 1;
+  }
+  std::fprintf(stderr, "\n");
+  std::cout << "wrote " << args[1] << "\n";
+  return 0;
+}
+
+int CommandGcRequest(const std::vector<std::string>& args) {
+  if (args.empty()) {
+    std::cerr << "usage: cs2mv gc-request <share code>\n";
+    return 2;
+  }
+  ShareCode code;
+  std::string error;
+  if (!DecodeShareCode(args[0], &code, &error)) {
+    std::cerr << "error: " << error << "\n";
+    return 1;
+  }
+  const std::string payload = BuildMatchListRequest(code);
+  std::cout << "message id : " << kMsgMatchListRequestFullGameInfo
+            << " (k_EMsgGCCStrike15_v2_MatchListRequestFullGameInfo)\n"
+            << "app id     : 730\n"
+            << "body       : ";
+  for (unsigned char c : payload) std::printf("%02x", c);
+  std::cout << "\n"
+            << "\nSend this body as the named GC message through a logged-in\n"
+               "Steam client; the reply is k_EMsgGCCStrike15_v2_MatchList ("
+            << kMsgMatchList << ").\n";
+  return 0;
+}
+
+int CommandServe(const Options& options) {
+  HttpServer server;
+  std::string error;
+  if (!server.Start(options.bind_address, options.port, &error)) {
+    std::cerr << "error: " << error << "\n";
+    return 1;
+  }
+  server.ServeStatic(options.web_root);
+
+  server.Route("/api/decode", [](const HttpRequest& request, HttpResponse* response) {
+    ShareCode code;
+    std::string error;
+    const std::string input = request.Param("code");
+    if (!DecodeShareCode(input, &code, &error)) {
+      response->SetError(400, error);
+      return;
+    }
+    std::string canonical;
+    NormalizeShareCode(input, &canonical, nullptr);
+    response->SetJson("{\"shareCode\":\"" + canonical + "\",\"matchId\":\"" +
+                      std::to_string(code.match_id) + "\",\"outcomeId\":\"" +
+                      std::to_string(code.outcome_id) + "\",\"token\":" +
+                      std::to_string(code.token) + "}");
+  });
+
+  server.Route("/api/match", [&options](const HttpRequest& request,
+                                        HttpResponse* response) {
+    std::string target = request.Param("code");
+    if (target.empty()) target = request.Param("demo");
+    if (target.empty()) {
+      response->SetError(400, "pass ?code=<share code> or ?demo=<path>");
+      return;
+    }
+    // Parsing a demo costs hundreds of megabytes; one at a time keeps a
+    // browser's parallel requests from multiplying that, and keeps two
+    // requests for the same match from racing on the cache file.
+    static std::mutex parse_mutex;
+    std::lock_guard<std::mutex> lock(parse_mutex);
+
+    Match match;
+    std::string error;
+    if (!LoadMatch(target, options, &match, &error)) {
+      response->SetError(404, error);
+      return;
+    }
+    response->SetJson(MatchToJson(match, false));
+  });
+
+  server.Route("/api/index", [&options](const HttpRequest&, HttpResponse* response) {
+    const ResolveOptions resolve = MakeResolveOptions(options);
+    const std::string index_path = resolve.index_path.empty()
+                                       ? resolve.cache_dir + "/index.txt"
+                                       : resolve.index_path;
+    DemoIndex index;
+    std::string error;
+    index.Load(index_path, &error);
+    std::string json = "{\"indexPath\":\"";
+    for (char c : index_path) {
+      if (c == '\\' || c == '"') json += '\\';
+      json += c;
+    }
+    json += "\",\"entries\":[";
+    bool first = true;
+    for (const auto& entry : index.entries()) {
+      if (!first) json += ',';
+      first = false;
+      json += "{\"key\":\"" + entry.first + "\",\"location\":\"";
+      for (char c : entry.second) {
+        if (c == '\\' || c == '"') json += '\\';
+        json += c;
+      }
+      json += "\"}";
+    }
+    json += "]}";
+    response->SetJson(json);
+  });
+
+  std::cout << "cs2-match-viewer listening on http://" << options.bind_address
+            << ":" << server.port() << "\n"
+            << "serving the UI from " << options.web_root << "\n"
+            << "press Ctrl+C to stop\n";
+  server.Serve();
+  return 0;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  std::vector<std::string> args(argv + 1, argv + argc);
+  if (args.empty()) {
+    PrintUsage();
+    return 0;
+  }
+
+  const std::string command = args[0];
+  args.erase(args.begin());
+
+  Options options;
+  std::string error;
+  if (!ParseFlags(&args, &options, &error)) {
+    std::cerr << "error: " << error << "\n";
+    return 2;
+  }
+
+  if (command == "serve") return CommandServe(options);
+  if (command == "decode") return CommandDecode(args);
+  if (command == "encode") return CommandEncode(args);
+  if (command == "add") return CommandAdd(args, options);
+  if (command == "list") return CommandList(options);
+  if (command == "parse") return CommandParse(args, options);
+  if (command == "inspect") return CommandInspect(args);
+  if (command == "fetch") return CommandFetch(args, options);
+  if (command == "gc-request") return CommandGcRequest(args);
+  if (command == "help" || command == "--help" || command == "-h") {
+    PrintUsage();
+    return 0;
+  }
+
+  std::cerr << "unknown command '" << command << "'\n\n";
+  PrintUsage();
+  return 2;
+}

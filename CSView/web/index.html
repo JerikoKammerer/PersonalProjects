@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CS2 Match Viewer</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>CS2 Match Viewer</h1>
+  <form id="lookup" autocomplete="off">
+    <input id="code" name="code" spellcheck="false"
+           placeholder="CSGO-xxxxx-xxxxx-xxxxx-xxxxx-xxxxx  or  a path to a .dem file">
+    <button type="submit">Open</button>
+  </form>
+  <p id="status" class="status"></p>
+</header>
+
+<main id="match" hidden>
+  <section class="summary">
+    <div class="map">
+      <h2 id="map-name">—</h2>
+      <p id="match-meta" class="meta"></p>
+    </div>
+    <div class="score">
+      <span class="ct" id="score-ct">0</span>
+      <span class="sep">:</span>
+      <span class="t" id="score-t">0</span>
+    </div>
+    <dl class="ids">
+      <dt>Match id</dt><dd id="match-id">—</dd>
+      <dt>Outcome id</dt><dd id="outcome-id">—</dd>
+      <dt>Demo</dt><dd id="demo-source">—</dd>
+    </dl>
+  </section>
+
+  <section class="board">
+    <h3>Scoreboard</h3>
+    <table id="scoreboard">
+      <thead>
+        <tr>
+          <th class="name">Player</th>
+          <th data-sort="kills">K</th>
+          <th data-sort="deaths">D</th>
+          <th data-sort="assists">A</th>
+          <th data-sort="kd">K/D</th>
+          <th data-sort="adr">ADR</th>
+          <th data-sort="hsPercent">HS%</th>
+          <th data-sort="mvps">MVP</th>
+          <th data-sort="entryKills">Entry</th>
+          <th data-sort="enemiesFlashed">Flashed</th>
+          <th data-sort="utilityDamage">Util dmg</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="timeline">
+    <h3>Rounds <span class="hint">click a round for its kill feed</span></h3>
+    <div id="rounds" class="rounds"></div>
+    <div id="round-detail" class="round-detail" hidden></div>
+  </section>
+
+  <section id="warnings-box" class="warnings" hidden>
+    <h3>Parser notes</h3>
+    <ul id="warnings"></ul>
+  </section>
+</main>
+
+<footer>
+  <p>
+    A share code holds only a match id, an outcome id and a token. Turning one
+    into a demo download needs the CS2 game coordinator, so this viewer reads
+    the demo from a local file or a URL you register with
+    <code>cs2mv add</code>.
+  </p>
+</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>
