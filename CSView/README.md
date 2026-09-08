@@ -129,28 +129,43 @@ That is the entire contract, so the helper can be written in anything.
 on `steam-user` and `globaloffensive`:
 
 ```bash
-cd tools/steam-gc-helper && npm install && node gc-helper.js login
-```
-
-Login is by **QR code scanned with the Steam mobile app**, so no password is
-typed, and what gets stored is a **refresh token** - never a password - in
-`~/.cs2mv-steam.json`, owner-only. Revoke it from Steam → Settings → Security,
-or by deleting that file.
-
-Then point cs2mv at it, by flag or environment variable:
-
-```bash
+cd tools/steam-gc-helper && npm install
 cs2mv serve --gc-helper "node tools/steam-gc-helper/gc-helper.js"
 ```
+
+Then **sign in from the web UI**: a panel appears under the search box with a
+*Sign in with Steam* button, which shows a QR code to scan with the Steam
+mobile app. `node gc-helper.js login` does the same thing in a terminal, and
+`status` / `logout` are there too.
+
+Putting sign-in in a browser page is only reasonable because of what the QR
+flow *is*: the page shows a challenge, the phone talks to Steam directly, and
+the helper receives a **refresh token**. No password is typed, none is stored,
+and neither the page nor the C++ server ever holds a credential. The token
+lands in `~/.cs2mv-steam.json`, owner-only, revocable from Steam → Settings →
+Security or by deleting the file. There is deliberately no password field
+anywhere in this project.
 
 Resolution only reaches the helper after the local searches have failed, and a
 URL it returns is cached in the index, so each match costs one Steam round trip
 at most.
 
-Worth knowing before enabling it: logging into Steam from a third-party client
-is widely done and rarely punished, but it is not something Valve formally
-blesses, and the risk is yours. Downloading the match in CS2 and letting the
-local search find it avoids the question entirely.
+Two things worth knowing before enabling it:
+
+* Logging into Steam from a third-party client is widely done and rarely
+  punished, but it is not something Valve formally blesses, and the risk is
+  yours. Downloading the match in CS2 and letting the local search find it
+  avoids the question entirely.
+* A lookup has to "play" CS2 to get a game coordinator session, so if the same
+  account is already in a game the new session is signed out with
+  `LoggedInElsewhere`. That is a session conflict, not a bad token - the helper
+  says so rather than sending you back through sign-in.
+
+`npm audit` on the helper is clean, but only because `package.json` pins two
+transitive dependencies forward. `npm audit fix --force` "resolves" the same
+advisories by **downgrading steam-user to 3.15**, which predates the
+refresh-token login this depends on; the overrides keep 5.x and drop the
+advisories instead. The comment next to them explains it.
 
 Registered URLs are downloaded and unpacked on first use into the cache
 (`%LOCALAPPDATA%\cs2-match-viewer` / `~/.cache/cs2-match-viewer`). Valve keeps

@@ -82,6 +82,87 @@ function writeToken(refreshToken, accountName) {
 
 // ---------------------------------------------------------------- login
 
+// The browser sign-in drives this same flow through a line protocol on stdout,
+// one event per line, so the C++ server needs no JSON parser and no Steam
+// knowledge:
+//
+//   QR <data:image/png;base64,...>   the challenge, ready to put in an <img>
+//   URL <https://s.team/q/...>       the same challenge as a link
+//   SCANNED                          phone has it, waiting for approval
+//   DONE <account name>              token written
+//   ERROR <message>
+//
+// Nothing secret crosses this channel: the QR is a challenge, and the phone
+// talks to Steam directly. The refresh token is written to disk by this
+// process and never printed.
+async function loginStream() {
+  let LoginSession, EAuthTokenPlatformType;
+  let QRCode;
+  try {
+    ({ LoginSession, EAuthTokenPlatformType } = require('steam-session'));
+    QRCode = require('qrcode');
+  } catch (err) {
+    console.log(`ERROR missing dependencies, run npm install (${err.message})`);
+    process.exit(1);
+  }
+
+  const emit = (line) => {
+    process.stdout.write(line + '\n');
+  };
+
+  try {
+    const session = new LoginSession(EAuthTokenPlatformType.SteamClient);
+    const started = await session.startWithQR();
+
+    const png = await QRCode.toDataURL(started.qrChallengeUrl,
+                                       { margin: 2, width: 320 });
+    emit(`QR ${png}`);
+    emit(`URL ${started.qrChallengeUrl}`);
+
+    session.on('remoteInteraction', () => emit('SCANNED'));
+
+    await new Promise((resolve, reject) => {
+      session.on('authenticated', resolve);
+      session.on('timeout', () => reject(new Error('the QR code expired')));
+      session.on('error', reject);
+    });
+
+    writeToken(session.refreshToken, session.accountName);
+    session.cancelLoginAttempt();
+    emit(`DONE ${session.accountName}`);
+    process.exit(0);
+  } catch (err) {
+    emit(`ERROR ${err.message}`);
+    process.exit(1);
+  }
+}
+
+function status() {
+  const token = readToken();
+  if (!token) {
+    console.log('SIGNEDOUT');
+    return;
+  }
+  let account = '';
+  try {
+    account = JSON.parse(fs.readFileSync(CONFIG, 'utf8')).accountName || '';
+  } catch (_) { /* the token is what matters */ }
+  console.log(`SIGNEDIN ${account}`);
+}
+
+function logout() {
+  try {
+    fs.unlinkSync(CONFIG);
+    console.log('SIGNEDOUT');
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      console.log('SIGNEDOUT');
+      return;
+    }
+    die(`Cannot remove ${CONFIG}: ${err.message}`);
+  }
+}
+
 async function login() {
   let LoginSession, EAuthTokenPlatformType, LoginApprover;
   try {
@@ -161,11 +242,19 @@ async function lookup(shareCode) {
 
   user.on('error', (err) => {
     clearTimeout(timer);
-    const expired = err && (err.eresult === 5 || err.eresult === 6);
-    finish(1, expired
-        ? `Steam rejected the stored token (${err.message}). Sign in again:\n` +
-          `  node ${path.resolve(__filename)} login`
-        : `Steam login failed: ${err.message}`);
+    // EResult 6 is LoggedInElsewhere, which is a session conflict rather than a
+    // bad token - telling someone to sign in again would send them the wrong
+    // way. It happens when this account is already playing CS2 somewhere,
+    // because the lookup has to "play" 730 to get a game coordinator session.
+    if (err && err.eresult === 6) {
+      finish(1, 'Steam signed this session out because the account is in use ' +
+                'elsewhere. Close CS2 (or stop playing on the other device) and ' +
+                'try again; the saved token is still fine.');
+    }
+    if (err && (err.eresult === 5 || err.eresult === 16 || err.eresult === 24)) {
+      finish(1, `Steam rejected the stored token (${err.message}). Sign in again.`);
+    }
+    finish(1, `Steam login failed: ${err.message}`);
   });
 
   user.on('loggedOn', () => {
@@ -203,8 +292,20 @@ function main() {
         '  node gc-helper.js CSGO-xxxxx-xxxxx-xxxxx-xxxxx-xxxxx\n');
     process.exit(2);
   }
+  if (args[0] === 'login' && args[1] === '--stream') {
+    loginStream();
+    return;
+  }
   if (args[0] === 'login') {
     login().catch((err) => die(`Login failed: ${err.message}`));
+    return;
+  }
+  if (args[0] === 'status') {
+    status();
+    return;
+  }
+  if (args[0] === 'logout') {
+    logout();
     return;
   }
 

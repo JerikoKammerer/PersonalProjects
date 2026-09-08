@@ -29,6 +29,7 @@ add_library(cs2mv STATIC
   src/parser.cpp
   src/protobuf.cpp
   src/sharecode.cpp
+  src/steam_login.cpp
   src/snappy.cpp
 )
 target_include_directories(cs2mv PUBLIC include PRIVATE src)

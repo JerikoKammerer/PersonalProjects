@@ -265,3 +265,108 @@ if (initial) {
   $('code').value = initial;
   load(initial);
 }
+
+// --- Steam sign-in -------------------------------------------------------
+//
+// Only a QR challenge reaches this page. The phone talks to Steam directly and
+// the helper keeps the resulting token, so nothing secret is handled here.
+
+let steamPoll = null;
+
+async function steamStatus() {
+  try {
+    const response = await fetch('/api/steam/status');
+    const s = await response.json();
+    const box = $('steam');
+    box.hidden = false;
+
+    if (!s.helperConfigured) {
+      $('steam-state').textContent = 'Steam helper not configured — matches you have downloaded in CS2 still work.';
+      $('steam-state').title = s.detail || '';
+      $('steam-signin').hidden = true;
+      $('steam-signout').hidden = true;
+      return;
+    }
+    if (s.signedIn) {
+      $('steam-state').innerHTML = 'Steam: <span class="on">signed in' +
+        (s.account ? ' as ' + escapeHtml(s.account) : '') + '</span>';
+      $('steam-signin').hidden = true;
+      $('steam-signout').hidden = false;
+      $('steam-qr').hidden = true;
+    } else {
+      $('steam-state').textContent = s.detail ||
+        'Steam: not signed in — sign in to fetch matches you have not downloaded.';
+      $('steam-signin').hidden = false;
+      $('steam-signout').hidden = true;
+    }
+  } catch (err) {
+    // The server is what serves this page, so a failure here is not worth
+    // shouting about; the panel just stays hidden.
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function steamSignIn() {
+  $('steam-signin').disabled = true;
+  try {
+    const response = await fetch('/api/steam/login', { method: 'POST' });
+    const body = await response.json();
+    if (!response.ok) {
+      $('steam-state').textContent = body.error || 'could not start sign-in';
+      return;
+    }
+    $('steam-qr').hidden = false;
+    $('steam-qr-progress').textContent = 'Asking Steam for a code…';
+    if (steamPoll) clearInterval(steamPoll);
+    steamPoll = setInterval(pollSteamLogin, 1000);
+  } finally {
+    $('steam-signin').disabled = false;
+  }
+}
+
+async function pollSteamLogin() {
+  let s;
+  try {
+    s = await (await fetch('/api/steam/login/status')).json();
+  } catch (err) {
+    return;
+  }
+
+  // A data: URL is the only thing accepted here, so a helper cannot inject
+  // markup into the page through this field.
+  if (s.qrPng && s.qrPng.startsWith('data:image/png;base64,')) {
+    $('steam-qr-img').src = s.qrPng;
+  }
+  if (s.qrUrl) $('steam-qr-link').href = s.qrUrl;
+
+  const progress = $('steam-qr-progress');
+  if (s.state === 'waiting') {
+    progress.textContent = 'Waiting for a phone…';
+  } else if (s.state === 'scanned') {
+    progress.textContent = 'Scanned — approve the sign-in on your phone.';
+  } else if (s.state === 'done') {
+    clearInterval(steamPoll);
+    steamPoll = null;
+    $('steam-qr').hidden = true;
+    steamStatus();
+  } else if (s.state === 'error') {
+    clearInterval(steamPoll);
+    steamPoll = null;
+    progress.textContent = s.message || 'sign-in failed';
+  }
+}
+
+async function steamSignOut() {
+  if (steamPoll) { clearInterval(steamPoll); steamPoll = null; }
+  await fetch('/api/steam/logout', { method: 'POST' });
+  $('steam-qr').hidden = true;
+  steamStatus();
+}
+
+$('steam-signin').addEventListener('click', steamSignIn);
+$('steam-signout').addEventListener('click', steamSignOut);
+steamStatus();

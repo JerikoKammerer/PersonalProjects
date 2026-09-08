@@ -24,7 +24,9 @@
 #include "cs2mv/locator.h"
 #include "cs2mv/match.h"
 #include "cs2mv/parser.h"
+#include "cs2mv/json.h"
 #include "cs2mv/sharecode.h"
+#include "cs2mv/steam_login.h"
 
 namespace {
 
@@ -445,6 +447,81 @@ int CommandServe(const Options& options) {
       return;
     }
     response->SetJson(MatchToJson(match, false));
+  });
+
+  // --- Steam sign-in, for the game coordinator helper.
+  //
+  // Only a QR challenge ever reaches the browser. The phone talks to Steam
+  // directly and the helper keeps the resulting token to itself, so no
+  // credential passes through this server or the page.
+  static SteamLogin steam_login;
+
+  server.Route("/api/steam/status", [&options](const HttpRequest&,
+                                               HttpResponse* response) {
+    const ResolveOptions resolve = MakeResolveOptions(options);
+    JsonWriter w;
+    w.BeginObject();
+    w.Field("helperConfigured", !resolve.gc_helper.empty());
+    if (resolve.gc_helper.empty()) {
+      w.Field("signedIn", false);
+      w.Field("account", std::string());
+      w.Field("detail",
+              "No Steam helper configured. Start the server with --gc-helper, "
+              "or set CS2MV_GC_HELPER. Matches already downloaded in CS2 work "
+              "without it.");
+    } else {
+      bool signed_in = false;
+      std::string account;
+      std::string error;
+      if (SteamStatus(resolve.gc_helper, &signed_in, &account, &error)) {
+        w.Field("signedIn", signed_in);
+        w.Field("account", account);
+        w.Field("detail", std::string());
+      } else {
+        w.Field("signedIn", false);
+        w.Field("account", std::string());
+        w.Field("detail", error);
+      }
+    }
+    w.EndObject();
+    response->SetJson(w.str());
+  });
+
+  server.Route("/api/steam/login", [&options](const HttpRequest&,
+                                              HttpResponse* response) {
+    const ResolveOptions resolve = MakeResolveOptions(options);
+    std::string error;
+    if (!steam_login.Start(resolve.gc_helper, &error)) {
+      response->SetError(400, error);
+      return;
+    }
+    response->SetJson("{\"started\":true}");
+  });
+
+  server.Route("/api/steam/login/status", [](const HttpRequest&,
+                                             HttpResponse* response) {
+    const SteamLogin::Snapshot snapshot = steam_login.Get();
+    JsonWriter w;
+    w.BeginObject();
+    w.Field("state", SteamLogin::StateName(snapshot.state));
+    w.Field("qrPng", snapshot.qr_png);
+    w.Field("qrUrl", snapshot.qr_url);
+    w.Field("account", snapshot.account);
+    w.Field("message", snapshot.message);
+    w.EndObject();
+    response->SetJson(w.str());
+  });
+
+  server.Route("/api/steam/logout", [&options](const HttpRequest&,
+                                               HttpResponse* response) {
+    const ResolveOptions resolve = MakeResolveOptions(options);
+    std::string error;
+    steam_login.Cancel();
+    if (!SteamLogout(resolve.gc_helper, &error)) {
+      response->SetError(400, error);
+      return;
+    }
+    response->SetJson("{\"signedIn\":false}");
   });
 
   server.Route("/api/index", [&options](const HttpRequest&, HttpResponse* response) {

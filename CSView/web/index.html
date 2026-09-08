@@ -15,6 +15,29 @@
     <button type="submit">Open</button>
   </form>
   <p id="status" class="status"></p>
+
+  <div id="steam" class="steam" hidden>
+    <div class="steam-line">
+      <span id="steam-state" class="steam-state"></span>
+      <button type="button" id="steam-signin" hidden>Sign in with Steam</button>
+      <button type="button" id="steam-signout" class="ghost" hidden>Sign out</button>
+    </div>
+    <div id="steam-qr" class="steam-qr" hidden>
+      <img id="steam-qr-img" alt="Steam sign-in QR code" width="200" height="200">
+      <div class="steam-qr-help">
+        <p><strong>Scan with the Steam mobile app</strong> — Steam Guard, then
+          the scan button.</p>
+        <p id="steam-qr-progress" class="muted">Waiting for a phone…</p>
+        <p class="muted">
+          No password is typed here and none is stored. Your phone talks to
+          Steam directly; this page only shows the challenge, and the helper
+          keeps a revocable token.
+        </p>
+        <p><a id="steam-qr-link" href="#" target="_blank" rel="noreferrer">Open
+          the challenge link instead</a></p>
+      </div>
+    </div>
+  </div>
 </header>
 
 <main id="match" hidden>

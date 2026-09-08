@@ -137,3 +137,16 @@ code { font-family: ui-monospace, Consolas, monospace; color: var(--text); }
   .ids { justify-self: start; }
   main, header, footer { padding-left: 1rem; padding-right: 1rem; }
 }
+
+/* Steam sign-in, for the game coordinator helper. */
+.steam { margin-top: .9rem; padding-top: .9rem; border-top: 1px solid var(--line); }
+.steam-line { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
+.steam-state { color: var(--muted); font-size: 13px; }
+.steam-state .on { color: var(--accent); }
+button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+button.ghost:hover { color: var(--text); filter: none; }
+.steam-qr { display: flex; gap: 1.25rem; margin-top: .9rem; align-items: flex-start; flex-wrap: wrap; }
+.steam-qr img { background: #fff; padding: 8px; border-radius: 8px; }
+.steam-qr-help { max-width: 46ch; font-size: 13px; }
+.steam-qr-help p { margin: 0 0 .5rem; }
+.muted { color: var(--muted); }
