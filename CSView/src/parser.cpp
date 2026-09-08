@@ -88,6 +88,23 @@ class EventArgs {
   std::vector<std::pair<const std::string*, EventValue>> keys_;
 };
 
+// Game events and the userinfo string table number players differently.
+//
+// Confirmed against retail CS2 demos: the userinfo table reports a user id of
+// 0xFF00 | slot (65280 for slot 0, 65281 for slot 1, ...) while game events
+// refer to the same player by the plain 0-based slot. Masking both down to the
+// low byte makes them the same key.
+//
+// 0xFFFF - which is -1 read as the `short` these keys are declared as - means
+// "no player": a death with no killer, a kill with no assist. Note that 0 is a
+// perfectly good player (slot 0), so it must not be treated as absent.
+constexpr long long kNoPlayerRef = 0xFFFF;
+
+long long NormalizePlayerRef(long long raw) {
+  if (raw < 0 || raw == kNoPlayerRef || raw > 0xFFFF) return -1;
+  return raw & 0xFF;
+}
+
 bool IsUtilityWeapon(const std::string& w) {
   return w == "hegrenade" || w == "inferno" || w == "molotov" ||
          w == "incgrenade" || w == "flashbang" || w == "decoy" ||
@@ -115,20 +132,75 @@ pb::Slice PacketPayload(const std::string& body) {
 }
 
 // Tallies the table names in a CDemoStringTables { tables = 1 repeated
-// table_t { table_name = 1, ... } }, for the inventory report.
+// table_t { table_name = 1, items = 2 } }, and records what the userinfo
+// table says about each player slot.
 void CountStringTableNames(const pb::Slice& tables, DemoInventory* out) {
   pb::Reader r(tables);
   std::uint32_t field = 0;
   while (r.NextField(&field)) {
     if (field != 1 || r.wire_type() != pb::kLengthDelimited) continue;
     pb::Reader table(r.ReadBytes());
+    std::string name;
+    std::vector<pb::Slice> items;
     std::uint32_t table_field = 0;
     while (table.NextField(&table_field)) {
       if (table_field == 1 && table.wire_type() == pb::kLengthDelimited) {
-        out->string_tables[table.ReadString()]++;
+        name = table.ReadString();
+      } else if (table_field == 2 && table.wire_type() == pb::kLengthDelimited) {
+        items.push_back(table.ReadBytes());
       }
     }
+    if (name.empty()) continue;
+    out->string_tables[name]++;
+    if (name != "userinfo" || !out->user_info.empty()) continue;
+
+    for (std::size_t i = 0; i < items.size(); ++i) {
+      pb::Reader item(items[i]);
+      pb::Slice data;
+      std::uint32_t item_field = 0;
+      while (item.NextField(&item_field)) {
+        if (item_field == 2 && item.wire_type() == pb::kLengthDelimited) {
+          data = item.ReadBytes();
+        }
+      }
+      if (data.data == nullptr || data.size == 0) continue;
+
+      DemoInventory::UserInfoEntry entry;
+      entry.slot = static_cast<int>(i);
+      pb::Reader info(data);
+      std::uint32_t info_field = 0;
+      while (info.NextField(&info_field)) {
+        switch (info_field) {
+          case 1: entry.name = info.ReadString(); break;
+          case 2: entry.steam_id = info.ReadFixed64(); break;
+          case 3: entry.user_id = info.ReadInt32(); break;
+          default: break;
+        }
+      }
+      if (!entry.name.empty()) out->user_info.push_back(entry);
+    }
   }
+}
+
+// CMsgSource1LegacyGameEvent.key_t. Exactly one val_* field is present; which
+// one it is defines the value's type, so the companion `type` field is ignored.
+EventValue ParseEventValue(const pb::Slice& k) {
+  EventValue v;
+  pb::Reader r(k);
+  std::uint32_t field = 0;
+  while (r.NextField(&field)) {
+    switch (field) {
+      case 2: v.kind = EventValue::kString; v.s = r.ReadString(); break;
+      case 3: v.kind = EventValue::kFloat; v.f = r.ReadFloat(); break;
+      case 4: v.kind = EventValue::kInt; v.i = r.ReadInt32(); break;
+      case 5: v.kind = EventValue::kInt; v.i = r.ReadInt32(); break;
+      case 6: v.kind = EventValue::kInt; v.i = r.ReadInt32(); break;
+      case 7: v.kind = EventValue::kBool; v.b = r.ReadBool(); break;
+      case 8: v.kind = EventValue::kUInt64; v.u = r.ReadVarint(); break;
+      default: break;
+    }
+  }
+  return v;
 }
 
 class MatchParser {
@@ -178,6 +250,7 @@ class MatchParser {
       case kDemPacket:
       case kDemSignonPacket:
         tick_ = frame.tick;
+        if (frame.tick > last_tick_) last_tick_ = frame.tick;
         HandlePacket(frame.body);
         break;
       default:
@@ -438,26 +511,6 @@ class MatchParser {
     Dispatch(name, args);
   }
 
-  // CMsgSource1LegacyGameEvent.key_t
-  static EventValue ParseEventValue(const pb::Slice& k) {
-    EventValue v;
-    pb::Reader r(k);
-    std::uint32_t field = 0;
-    while (r.NextField(&field)) {
-      switch (field) {
-        case 2: v.kind = EventValue::kString; v.s = r.ReadString(); break;
-        case 3: v.kind = EventValue::kFloat; v.f = r.ReadFloat(); break;
-        case 4: v.kind = EventValue::kInt; v.i = r.ReadInt32(); break;
-        case 5: v.kind = EventValue::kInt; v.i = r.ReadInt32(); break;
-        case 6: v.kind = EventValue::kInt; v.i = r.ReadInt32(); break;
-        case 7: v.kind = EventValue::kBool; v.b = r.ReadBool(); break;
-        case 8: v.kind = EventValue::kUInt64; v.u = r.ReadVarint(); break;
-        default: break;  // field 1 is the type tag, which is redundant here
-      }
-    }
-    return v;
-  }
-
   // --------------------------------------------------------------- events
 
   void Dispatch(const std::string& name, const EventArgs& args) {
@@ -467,8 +520,14 @@ class MatchParser {
     if (name == "player_team") return OnPlayerTeam(args);
     if (name == "player_connect") return OnPlayerConnect(args);
     if (name == "player_disconnect") return OnPlayerConnect(args);  // same keys
-    if (name == "round_start") return OnRoundStart(args);
+    // Round boundaries. Which of these a demo carries varies: retail CS2 GOTV
+    // recordings emit round_prestart / round_freeze_end / round_officially_ended
+    // but no round_start or round_end at all, so all of them are handled and
+    // the ones that arrive win.
+    if (name == "round_start" || name == "round_prestart") return OnRoundStart(args);
+    if (name == "round_freeze_end") return OnRoundLive(args);
     if (name == "round_end") return OnRoundEnd(args);
+    if (name == "round_officially_ended") return OnRoundOver();
     if (name == "round_mvp") return OnRoundMvp(args);
     if (name == "bomb_planted") return OnBomb(1);
     if (name == "bomb_defused") return OnBomb(2);
@@ -529,6 +588,9 @@ class MatchParser {
     k.victim_team = TeamOf(victim);
     current_.kills.push_back(k);
 
+    if (k.victim_team == kTeamT) ++round_deaths_[0];
+    if (k.victim_team == kTeamCT) ++round_deaths_[1];
+
     if (victim >= 0) match_->players[static_cast<std::size_t>(victim)].deaths++;
     if (attacker >= 0 && attacker != victim) {
       Player& a = match_->players[static_cast<std::size_t>(attacker)];
@@ -573,19 +635,104 @@ class MatchParser {
   }
 
   void OnRoundStart(const EventArgs&) {
+    // round_start and round_prestart both mean "a new round"; ignore the second
+    // one when a demo sends both, or every round would be split in two.
+    if (round_open_ && current_.kills.empty() && current_.winner == kTeamUnknown &&
+        tick_ - current_.start_tick < 128) {
+      return;
+    }
     Flush();
     current_ = Round();
     current_.start_tick = tick_;
     round_start_tick_ = tick_;
+    round_deaths_[0] = 0;
+    round_deaths_[1] = 0;
+    round_open_ = true;
   }
+
+  // Freeze time is over and the round is live: that is when the clock the kill
+  // feed shows should start.
+  void OnRoundLive(const EventArgs&) { round_start_tick_ = tick_; }
 
   void OnRoundEnd(const EventArgs& args) {
     const int winner = static_cast<int>(args.Int("winner", kTeamUnknown));
     current_.winner = winner;
+    current_.winner_inferred = false;
     current_.reason = static_cast<int>(args.Int("reason", 0));
     current_.reason_text = RoundEndReasonName(current_.reason);
     if (current_.reason_text.empty()) current_.reason_text = args.Str("message");
     current_.end_tick = tick_;
+  }
+
+  // round_officially_ended closes the round. When no round_end named a winner -
+  // the usual case in retail demos - work it out from what the round did.
+  void OnRoundOver() {
+    if (!round_open_) return;
+    current_.end_tick = tick_;
+    if (current_.winner == kTeamT || current_.winner == kTeamCT) {
+      Flush();
+      round_open_ = false;
+      return;
+    }
+    InferWinner();
+    Flush();
+    round_open_ = false;
+  }
+
+  // Order matters: the bomb settles a round outright, otherwise a side that
+  // lost everyone lost the round, otherwise the clock ran out and the CTs kept
+  // the site.
+  void InferWinner() {
+    int roster_t = 0, roster_ct = 0;
+    for (const Player& p : match_->players) {
+      if (p.hltv) continue;
+      if (p.team == kTeamT) ++roster_t;
+      if (p.team == kTeamCT) ++roster_ct;
+    }
+    const int alive_t = roster_t - round_deaths_[0];
+    const int alive_ct = roster_ct - round_deaths_[1];
+
+    // Without both rosters there is nothing to reason from: every elimination
+    // test would pass vacuously and the round would default to the CTs. Leave
+    // it undecided rather than inventing a winner. This is the normal state of
+    // affairs for the first half, because retail demos carry a single
+    // player_team burst at the halftime swap and nothing before it.
+    if (roster_t == 0 || roster_ct == 0) {
+      if (current_.bomb_exploded) {
+        current_.winner = kTeamT;
+        current_.reason = kReasonTargetBombed;
+        current_.winner_inferred = true;
+        current_.reason_text = "Target bombed (inferred)";
+      } else if (current_.bomb_defused) {
+        current_.winner = kTeamCT;
+        current_.reason = kReasonBombDefused;
+        current_.winner_inferred = true;
+        current_.reason_text = "Bomb defused (inferred)";
+      } else {
+        current_.reason_text = "winner unknown (no team data for this round)";
+      }
+      return;
+    }
+
+    current_.winner_inferred = true;
+    if (current_.bomb_exploded) {
+      current_.winner = kTeamT;
+      current_.reason = kReasonTargetBombed;
+    } else if (current_.bomb_defused) {
+      current_.winner = kTeamCT;
+      current_.reason = kReasonBombDefused;
+    } else if (roster_t > 0 && alive_t <= 0) {
+      current_.winner = kTeamCT;
+      current_.reason = kReasonCTWin;
+    } else if (roster_ct > 0 && alive_ct <= 0) {
+      current_.winner = kTeamT;
+      current_.reason = kReasonTWin;
+    } else {
+      current_.winner = kTeamCT;
+      current_.reason = kReasonTargetSaved;
+    }
+    current_.reason_text = std::string(RoundEndReasonName(current_.reason)) +
+                           " (inferred)";
   }
 
   void OnRoundMvp(const EventArgs& args) {
@@ -622,19 +769,28 @@ class MatchParser {
     current_ = Round();
     current_.start_tick = tick_;
     round_start_tick_ = tick_;
+    round_deaths_[0] = 0;
+    round_deaths_[1] = 0;
+    round_open_ = false;
   }
 
   // Commits the round being accumulated, if it actually finished.
   void Flush() {
-    if (current_.winner != kTeamT && current_.winner != kTeamCT) {
-      // Warmup and aborted rounds never get a winner; drop them.
+    const bool decided = current_.winner == kTeamT || current_.winner == kTeamCT;
+    // A round with neither a winner nor any action is warmup noise or an
+    // aborted restart; drop it. A round that was played but could not be
+    // attributed is still a round: it belongs in the timeline and it counts
+    // towards rounds played, or every ADR would be wrong.
+    if (!decided && current_.kills.empty()) {
       current_ = Round();
       return;
     }
-    if (current_.winner == kTeamT) {
-      match_->score_t++;
-    } else {
-      match_->score_ct++;
+    if (decided) {
+      if (current_.winner == kTeamT) {
+        match_->score_t++;
+      } else {
+        match_->score_ct++;
+      }
     }
     current_.number = static_cast<int>(match_->rounds.size()) + 1;
     current_.score_t = match_->score_t;
@@ -649,8 +805,12 @@ class MatchParser {
         match_->players[static_cast<std::size_t>(first.victim)].entry_deaths++;
       }
     }
+    // Everyone taking part played the round. Deliberately not "everyone with a
+    // side": retail demos often carry a single player_team burst at the
+    // halftime swap and nothing at the start, so a side-based test would
+    // silently skip the whole first half and inflate every ADR.
     for (Player& p : match_->players) {
-      if (p.team == kTeamT || p.team == kTeamCT) p.rounds_played++;
+      if (!p.hltv && p.team != kTeamSpectator) p.rounds_played++;
     }
 
     match_->rounds.push_back(current_);
@@ -658,8 +818,40 @@ class MatchParser {
   }
 
   void Finish() {
-    Flush();
+    // The last round of a match has no round_officially_ended, so close it the
+    // same way the others were closed.
+    if (round_open_) {
+      OnRoundOver();
+    } else {
+      Flush();
+    }
     match_->rounds_played = static_cast<int>(match_->rounds.size());
+
+    int inferred = 0;
+    int undecided = 0;
+    for (const Round& r : match_->rounds) {
+      if (r.winner_inferred) ++inferred;
+      if (r.winner != kTeamT && r.winner != kTeamCT) ++undecided;
+    }
+    const std::string total = std::to_string(match_->rounds.size());
+    if (inferred > 0) {
+      Warn("this demo carries no round_end events, so " + std::to_string(inferred) +
+           " of " + total +
+           " round winners were deduced from the bomb and elimination state "
+           "rather than read from the demo.");
+    }
+    if (undecided > 0) {
+      Warn(std::to_string(undecided) + " of " + total +
+           " rounds could not be attributed to a side and are not counted in "
+           "the score. Player sides come from player_team events, which retail "
+           "demos send only at the halftime swap, leaving the first half "
+           "unattributed. Reading the score from entity state would fix this; "
+           "this parser reads game events only.");
+    }
+    // CDemoFileInfo, which carries the real playback length, sits after
+    // DEM_Stop and so is never reached by a forward read. Fall back to the last
+    // tick actually seen.
+    if (match_->playback_ticks <= 0) match_->playback_ticks = last_tick_;
     if (match_->playback_ticks > 0 && match_->playback_time <= 0.0) {
       match_->playback_time = match_->playback_ticks * match_->tick_interval;
     }
@@ -733,32 +925,20 @@ class MatchParser {
     return match_->players[static_cast<std::size_t>(idx)].team;
   }
 
-  // Resolves a game event's player reference.
-  //
-  // CS2 packs a generation counter into the bits above the low byte of a user
-  // id, so the low byte is what identifies the player; this mirrors what
-  // demoinfocs-golang does for Source 2 demos. Zero is the engine's "nobody"
-  // (world damage, a death with no killer, an absent assister) and never a
-  // player.
-  //
-  // The user id map is authoritative. The slot fallback only runs when no user
-  // ids were ever learned, because slots and user ids share a number space and
-  // guessing between them would silently credit the wrong player.
+  // Resolves a game event's player reference. See NormalizePlayerRef: both the
+  // event value and the userinfo user id are reduced to the same key, so the
+  // user id map and the slot map agree and either can answer.
   int PlayerFromEvent(const EventArgs& args, const char* key) {
     const EventValue* v = args.Find(key);
     if (v == nullptr) return -1;
-    long long raw = v->AsInt();
-    if (raw <= 0) return -1;
-    if (raw <= 0xFFFF) raw &= 0xFF;
-    if (raw == 0) return -1;
+    const long long id = NormalizePlayerRef(v->AsInt());
+    if (id < 0) return -1;  // legitimately absent, not a failure to resolve
 
     ++resolve_attempts_;
-    auto by_user = by_user_id_.find(raw);
+    auto by_user = by_user_id_.find(id);
     if (by_user != by_user_id_.end()) return by_user->second;
-    if (by_user_id_.empty()) {
-      auto by_slot = by_slot_.find(static_cast<int>(raw));
-      if (by_slot != by_slot_.end()) return by_slot->second;
-    }
+    auto by_slot = by_slot_.find(static_cast<int>(id));
+    if (by_slot != by_slot_.end()) return by_slot->second;
     ++resolve_failures_;
     return -1;
   }
@@ -768,6 +948,10 @@ class MatchParser {
   // events give.
   int Upsert(int slot, long long user_id, std::uint64_t steam_id,
              const std::string& name) {
+    // Key the lookup map the same way events will be looked up, or the two
+    // numbering schemes never meet.
+    const long long user_key = NormalizePlayerRef(user_id);
+
     int idx = -1;
     if (steam_id != 0) {
       auto it = by_steam_id_.find(steam_id);
@@ -777,8 +961,8 @@ class MatchParser {
       auto it = by_slot_.find(slot);
       if (it != by_slot_.end()) idx = it->second;
     }
-    if (idx < 0 && user_id >= 0) {
-      auto it = by_user_id_.find(user_id);
+    if (idx < 0 && user_key >= 0) {
+      auto it = by_user_id_.find(user_key);
       if (it != by_user_id_.end()) idx = it->second;
     }
     if (idx < 0) {
@@ -793,7 +977,7 @@ class MatchParser {
     if (!name.empty()) p.name = name;
 
     if (slot >= 0) by_slot_[slot] = idx;
-    if (user_id >= 0) by_user_id_[user_id] = idx;
+    if (user_key >= 0) by_user_id_[user_key] = idx;
     if (steam_id != 0) by_steam_id_[steam_id] = idx;
     return idx;
   }
@@ -808,8 +992,11 @@ class MatchParser {
 
   Round current_;
   std::int32_t tick_ = 0;
+  std::int32_t last_tick_ = 0;
   std::int32_t round_start_tick_ = 0;
   bool match_started_ = false;
+  bool round_open_ = false;
+  int round_deaths_[2] = {0, 0};  // [0] = T losses, [1] = CT losses
   long long resolve_attempts_ = 0;
   long long resolve_failures_ = 0;
 };
@@ -875,8 +1062,21 @@ bool InspectDemo(DemoReader* reader, DemoInventory* out, std::string* error) {
           EventDescriptor desc;
           std::uint32_t f = 0;
           while (dr.NextField(&f)) {
-            if (f == 1) id = dr.ReadInt32();
-            else if (f == 2) desc.name = dr.ReadString();
+            if (f == 1) {
+              id = dr.ReadInt32();
+            } else if (f == 2) {
+              desc.name = dr.ReadString();
+            } else if (f == 3 && dr.wire_type() == pb::kLengthDelimited) {
+              // key_t { type = 1, name = 2 } - the key names are what make the
+              // positional values in an event interpretable.
+              pb::Reader kr(dr.ReadBytes());
+              std::string key_name;
+              std::uint32_t kf = 0;
+              while (kr.NextField(&kf)) {
+                if (kf == 2) key_name = kr.ReadString();
+              }
+              desc.keys.push_back(std::move(key_name));
+            }
           }
           if (id >= 0) descriptors[id] = std::move(desc);
         }
@@ -885,14 +1085,30 @@ bool InspectDemo(DemoReader* reader, DemoInventory* out, std::string* error) {
         std::uint32_t field = 0;
         std::string name;
         int id = -1;
+        std::vector<EventValue> values;
         while (r.NextField(&field)) {
           if (field == 1) name = r.ReadString();
           else if (field == 2) id = r.ReadInt32();
+          else if (field == 3) values.push_back(ParseEventValue(r.ReadBytes()));
         }
         auto it = descriptors.find(id);
-        if (it != descriptors.end() && !it->second.name.empty()) name = it->second.name;
+        const EventDescriptor* desc = it != descriptors.end() ? &it->second : nullptr;
+        if (desc != nullptr && !desc->name.empty()) name = desc->name;
         if (name.empty()) name = "event#" + std::to_string(id);
         out->events[name]++;
+        if (desc != nullptr && out->event_keys.find(name) == out->event_keys.end()) {
+          out->event_keys[name] = desc->keys;
+        }
+
+        // Record what the events actually call a player.
+        if (desc != nullptr) {
+          for (std::size_t i = 0; i < values.size() && i < desc->keys.size(); ++i) {
+            const std::string& key = desc->keys[i];
+            if (key == "userid" || key == "attacker" || key == "assister") {
+              out->event_player_refs[key][values[i].AsInt()]++;
+            }
+          }
+        }
       }
     }
   }

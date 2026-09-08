@@ -88,6 +88,11 @@ struct Round {
   int winner = kTeamUnknown;
   int reason = 0;
   std::string reason_text;
+  // True when the winner was deduced from the bomb and elimination state
+  // rather than read from a round_end event. Retail CS2 demos frequently omit
+  // round_end entirely - the authoritative score lives in entity state, which
+  // this parser does not decode.
+  bool winner_inferred = false;
   int score_t = 0;            // running score after this round
   int score_ct = 0;
   bool bomb_planted = false;

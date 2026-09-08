@@ -16,8 +16,10 @@
 #ifndef CS2MV_PARSER_H_
 #define CS2MV_PARSER_H_
 
+#include <cstdint>
 #include <map>
 #include <string>
+#include <vector>
 
 #include "cs2mv/demo.h"
 #include "cs2mv/match.h"
@@ -45,10 +47,27 @@ struct DemoInventory {
   std::map<int, long long> frames;          // EDemoCommands  -> count
   std::map<int, long long> messages;        // net/svc/GE kind -> count
   std::map<std::string, long long> events;  // game event name -> count
+  // Game event name -> its key names, in wire order. What a demo calls the
+  // fields decides whether the parser can read them at all.
+  std::map<std::string, std::vector<std::string>> event_keys;
   std::map<std::string, long long> string_tables;
   long long total_bytes = 0;
   long long compressed_frames = 0;
   int last_tick = 0;
+
+  // Player identity diagnostics. When a demo's scoreboard comes out empty the
+  // question is always "what do game events call a player, and does that match
+  // what the userinfo table says", so report both sides.
+  struct UserInfoEntry {
+    int slot = -1;
+    int user_id = -1;
+    std::uint64_t steam_id = 0;
+    std::string name;
+  };
+  std::vector<UserInfoEntry> user_info;
+  // For each player-referencing game event key, the raw values it carried and
+  // how often. Reveals both the numbering scheme and the "no player" sentinel.
+  std::map<std::string, std::map<long long, long long>> event_player_refs;
 };
 
 bool InspectDemo(DemoReader* reader, DemoInventory* out, std::string* error);

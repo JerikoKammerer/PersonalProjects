@@ -266,20 +266,27 @@ def frame(kind, tick, body, compress=False):
 
 # ------------------------------------------------------------- the scenario
 
+# Numbering follows retail CS2, as dumped by `cs2mv inspect` from a real demo:
+# the userinfo string table carries a user id of 0xFF00 | slot, while game
+# events refer to players by the plain 0-based slot.
 PLAYERS = [
     # slot, userid, name, steamid, team
-    (0, 2, "Ada", 76561198000000001, 3),
-    (1, 3, "Bo", 76561198000000002, 3),
-    (2, 4, "Cyd", 76561198000000003, 2),
-    (3, 5, "Dex", 76561198000000004, 2),
+    (0, 0xFF00, "Ada", 76561198000000001, 3),
+    (1, 0xFF01, "Bo", 76561198000000002, 3),
+    (2, 0xFF02, "Cyd", 76561198000000003, 2),
+    (3, 0xFF03, "Dex", 76561198000000004, 2),
 ]
 BY_NAME = {name: (slot, userid, steam, team) for slot, userid, name, steam, team in PLAYERS}
 
+# 0xFFFF is -1 read as the `short` these keys are declared as, and is how CS2
+# spells "no player". Slot 0 is a real player, so 0 must never mean absent -
+# Ada sits in slot 0 here precisely to keep that honest.
+NO_PLAYER = 0xFFFF
+
 
 def uid(name):
-    """CS2 packs a generation counter above the low byte of a user id; the
-    parser masks it off. Emitting it here proves that path works."""
-    return 0xFF00 | BY_NAME[name][1]
+    """Game events address players by slot."""
+    return BY_NAME[name][0]
 
 
 def string_tables_frame():
@@ -359,7 +366,7 @@ def build():
              penetrated=0, compress=False):
         hurt(attacker, victim, 100, weapon)
         emit(5, [(SHORT, uid(victim)), (SHORT, uid(attacker)),
-                 (SHORT, uid(assister) if assister else 0),
+                 (SHORT, uid(assister) if assister else NO_PLAYER),
                  (STRING, weapon), (BOOL, headshot), (SHORT, penetrated),
                  (BOOL, False), (BOOL, False), (BOOL, False), (BOOL, False)],
              compress)

@@ -206,13 +206,49 @@ python tools/make_fixture.py     # regenerate fixtures
 ctest --test-dir build --output-on-failure
 ```
 
+## What retail demos actually contain
+
+Validated against two real CS2 matchmaking demos (de_mirage and de_ancient,
+~220 MB each). The container, Snappy, protobuf and bit-level framing all work
+unchanged; player names, kills, deaths, assists, damage, headshots and flashes
+all come out consistent (kills plus attacker-less deaths equal total deaths, to
+the event). Three things about real demos were not what the documentation
+suggests, and each is worth knowing before trusting a number:
+
+* **Players are addressed by slot, not by user id.** The `userinfo` string
+  table reports a user id of `0xFF00 | slot`, while game events use the plain
+  0-based slot. Both are normalised to the low byte. `0xFFFF` (a `short`'s -1)
+  means "no player"; **0 is a real player**, so it must never be read as absent.
+* **`round_start` and `round_end` are never sent.** Retail GOTV recordings
+  carry `round_prestart` / `round_poststart` / `round_freeze_end` /
+  `round_officially_ended` and no winner at all. Round winners are therefore
+  *deduced* from the bomb outcome and eliminations, and flagged with
+  `winnerInferred` in the JSON.
+* **Sides are only announced at the halftime swap.** `player_team` fires once
+  per player, at the swap, so nobody has a side during the first half. Rounds
+  played is therefore counted for every participant rather than for players
+  with a known side - otherwise the whole first half is skipped and every ADR
+  comes out inflated. First-half rounds that the bomb did not settle are left
+  unattributed and excluded from the score rather than guessed, and the parser
+  says so in `warnings`.
+
+The upshot: the scoreboard is trustworthy, the round timeline and kill feed are
+trustworthy, and **the score is partial** - typically the second half plus any
+bomb round. A correct full score needs the team scores out of entity state.
+
 ## Limitations
 
-* **Not tested against a retail demo.** Everything is verified against the
-  synthetic fixture and against Valve's published message definitions, but no
-  real CS2 demo was available while writing this. `cs2mv inspect <demo>` prints
-  the frames, message kinds, string tables and game events a demo actually
-  contains, which is the first thing to run if a real demo parses oddly.
+* **The score is incomplete**, for the reason above. Deriving the two rosters
+  from the kill graph (players never kill teammates, so the kill pairs are
+  bipartite) would recover first-half sides without touching entity state; that
+  is the obvious next improvement.
+* `cs2mv inspect <demo>` reports the frames, message kinds, string tables, game
+  events *with their key names*, the userinfo table and the raw player
+  references seen in events. That is the first thing to run when a demo parses
+  oddly - it is how every item above was diagnosed.
+* MVPs are always zero on retail demos: `round_mvp` is not broadcast either.
+* `CDemoFileInfo` sits after `DEM_Stop` and so is never reached by a forward
+  read; playback length falls back to the last tick seen.
 * No entity state, so no positions, economy, equipment, or anything derived
   from them (opening duels by site, trade kills, clutch detection).
 * Bit-packed `svc_CreateStringTable` / `svc_UpdateStringTable` deltas are not

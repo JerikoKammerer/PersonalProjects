@@ -124,6 +124,7 @@ void WriteRound(JsonWriter* w, const Round& r) {
   w->Field("winnerName", TeamName(r.winner));
   w->Field("reason", r.reason);
   w->Field("reasonText", r.reason_text);
+  w->Field("winnerInferred", r.winner_inferred);
   w->Field("scoreT", r.score_t);
   w->Field("scoreCt", r.score_ct);
   w->Field("bombPlanted", r.bomb_planted);

@@ -300,9 +300,34 @@ int CommandInspect(const std::vector<std::string>& args) {
   for (const auto& entry : inventory.string_tables) {
     std::cout << "  " << entry.first << " x" << entry.second << "\n";
   }
-  std::cout << "game events\n";
+  std::cout << "game events (name xcount [key names])\n";
   for (const auto& entry : inventory.events) {
-    std::cout << "  " << entry.first << " x" << entry.second << "\n";
+    std::cout << "  " << entry.first << " x" << entry.second;
+    auto keys = inventory.event_keys.find(entry.first);
+    if (keys != inventory.event_keys.end() && !keys->second.empty()) {
+      std::cout << " [";
+      for (std::size_t i = 0; i < keys->second.size(); ++i) {
+        if (i != 0) std::cout << ", ";
+        std::cout << keys->second[i];
+      }
+      std::cout << "]";
+    }
+    std::cout << "\n";
+  }
+
+  // Player identity, the usual culprit when a scoreboard comes out empty.
+  std::cout << "userinfo entries (slot / userid / steamid / name)\n";
+  for (const auto& entry : inventory.user_info) {
+    std::cout << "  " << entry.slot << "\t" << entry.user_id << "\t"
+              << entry.steam_id << "\t" << entry.name << "\n";
+  }
+  std::cout << "player references in game events (raw value x count)\n";
+  for (const auto& key : inventory.event_player_refs) {
+    std::cout << "  " << key.first << ":";
+    for (const auto& value : key.second) {
+      std::cout << " " << value.first << "x" << value.second;
+    }
+    std::cout << "\n";
   }
   if (!ok) {
     std::cerr << "warning: " << error << "\n";
