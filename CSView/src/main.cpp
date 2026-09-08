@@ -524,6 +524,63 @@ int CommandServe(const Options& options) {
     response->SetJson("{\"signedIn\":false}");
   });
 
+  // Demos CS2 has already downloaded, newest first. No Steam involved: this is
+  // just what is on disk, labelled by reading each demo's first frame.
+  server.Route("/api/matches", [](const HttpRequest&, HttpResponse* response) {
+    JsonWriter w;
+    w.BeginObject();
+    w.Key("matches");
+    w.BeginArray();
+    for (const LocalDemo& demo : ListDownloadedDemos()) {
+      DemoSummary summary;
+      std::string ignored;
+      ReadDemoSummary(demo.path, &summary, &ignored);
+
+      w.BeginObject();
+      w.Field("path", demo.path);
+      w.FieldId("id", demo.id);
+      w.Field("map", summary.map_name);
+      w.Field("server", summary.server_name);
+      w.Field("sizeBytes", static_cast<long long>(demo.size_bytes));
+      w.Field("modified", static_cast<long long>(demo.modified_unix));
+      w.EndObject();
+    }
+    w.EndArray();
+    w.EndObject();
+    response->SetJson(w.str());
+  });
+
+  // The account's match history, straight from the game coordinator - the same
+  // list CS2 shows under Watch > Your Matches. Needs the signed-in helper, and
+  // takes a few seconds, so the page asks for it separately.
+  server.Route("/api/matches/remote", [&options](const HttpRequest&,
+                                                 HttpResponse* response) {
+    const ResolveOptions resolve = MakeResolveOptions(options);
+    std::vector<RemoteMatch> matches;
+    std::string error;
+    if (!ListRecentMatches(resolve.gc_helper, &matches, &error)) {
+      response->SetError(400, error);
+      return;
+    }
+
+    JsonWriter w;
+    w.BeginObject();
+    w.Key("matches");
+    w.BeginArray();
+    for (const RemoteMatch& match : matches) {
+      w.BeginObject();
+      w.Field("shareCode", EncodeShareCode(match.code));
+      w.FieldId("matchId", match.code.match_id);
+      w.FieldId("outcomeId", match.code.outcome_id);
+      w.Field("matchTime", match.match_time);
+      w.Field("expired", match.demo_url.empty());
+      w.EndObject();
+    }
+    w.EndArray();
+    w.EndObject();
+    response->SetJson(w.str());
+  });
+
   server.Route("/api/index", [&options](const HttpRequest&, HttpResponse* response) {
     const ResolveOptions resolve = MakeResolveOptions(options);
     const std::string index_path = resolve.index_path.empty()

@@ -219,6 +219,67 @@ function demoUrlFrom(match) {
   return null;
 }
 
+// Lists the account's recent matches, the way CS2's own "Your Matches" tab
+// does. One line each, so cs2mv can read it without a JSON parser:
+//
+//   MATCH <match id> <outcome id> <token> <unix time> <demo url or ->
+//
+// cs2mv rebuilds the share code from the first three, which is why no code has
+// to be typed anywhere.
+async function recent() {
+  const { SteamUser, GlobalOffensive } = requireDeps();
+  const refreshToken = readToken();
+  if (!refreshToken) {
+    console.log('ERROR not signed in');
+    process.exit(1);
+  }
+
+  const user = new SteamUser();
+  const cs = new GlobalOffensive(user);
+  const finish = (code, line) => {
+    if (line) console.log(line);
+    try { user.logOff(); } catch (_) { /* already gone */ }
+    process.exit(code);
+  };
+
+  const timer = setTimeout(() => {
+    finish(1, 'ERROR timed out waiting for the CS2 game coordinator');
+  }, GC_TIMEOUT_MS);
+
+  user.on('error', (err) => {
+    clearTimeout(timer);
+    if (err && err.eresult === 6) {
+      finish(1, 'ERROR this account is playing CS2 elsewhere; close the game ' +
+                'and try again');
+    }
+    finish(1, `ERROR ${err.message}`);
+  });
+
+  user.on('loggedOn', () => user.gamesPlayed([APPID]));
+
+  cs.on('connectedToGC', () => {
+    if (cs.requestRecentGames(user.steamID) === false) {
+      clearTimeout(timer);
+      finish(1, 'ERROR could not ask for recent games');
+    }
+  });
+
+  cs.on('matchList', (matches) => {
+    clearTimeout(timer);
+    for (const m of matches || []) {
+      const rounds = m.roundstatsall || [];
+      const last = rounds.length ? rounds[rounds.length - 1] : null;
+      const outcome = (last && last.reservationid) || m.matchid;
+      const token = (m.watchablematchinfo && m.watchablematchinfo.tv_port) || 0;
+      const url = demoUrlFrom(m) || '-';
+      console.log(`MATCH ${m.matchid} ${outcome} ${token} ${m.matchtime || 0} ${url}`);
+    }
+    finish(0);
+  });
+
+  user.logOn({ refreshToken });
+}
+
 async function lookup(shareCode) {
   const { SteamUser, GlobalOffensive } = requireDeps();
   const refreshToken = readToken();
@@ -302,6 +363,13 @@ function main() {
   }
   if (args[0] === 'status') {
     status();
+    return;
+  }
+  if (args[0] === 'recent') {
+    recent().catch((err) => {
+      console.log(`ERROR ${err.message}`);
+      process.exit(1);
+    });
     return;
   }
   if (args[0] === 'logout') {

@@ -150,3 +150,21 @@ button.ghost:hover { color: var(--text); filter: none; }
 .steam-qr-help { max-width: 46ch; font-size: 13px; }
 .steam-qr-help p { margin: 0 0 .5rem; }
 .muted { color: var(--muted); }
+
+/* Recent matches: demos already on disk. */
+.recent { margin: 1.5rem 2rem 0; background: var(--panel); border: 1px solid var(--line);
+          border-radius: 10px; padding: 1.25rem; }
+.recent-list { display: grid; gap: .4rem; }
+.recent-item { display: grid; grid-template-columns: 1fr auto auto; gap: 1rem; align-items: center;
+               padding: .55rem .75rem; background: var(--panel-2); border: 1px solid transparent;
+               border-radius: 6px; cursor: pointer; text-align: left; color: var(--text);
+               font: inherit; }
+.recent-item:hover { border-color: var(--ct); }
+.recent-item .map { font-weight: 600; }
+.recent-item .when, .recent-item .size { color: var(--muted); font-size: 12px;
+                                         font-variant-numeric: tabular-nums; }
+.recent-empty { color: var(--muted); font-size: 13px; }
+@media (max-width: 760px) { .recent { margin-left: 1rem; margin-right: 1rem; } }
+.recent-more { margin-top: .75rem; display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; }
+.recent-item.expired { opacity: .5; cursor: default; }
+.recent-item.expired:hover { border-color: transparent; }

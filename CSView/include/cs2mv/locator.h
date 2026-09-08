@@ -89,6 +89,19 @@ bool FetchDemo(const std::string& url, const std::string& dest,
 bool RunGcHelper(const std::string& command, const ShareCode& code,
                  std::string* url, std::string* error);
 
+// One match from the account's history, as the game coordinator reports it.
+struct RemoteMatch {
+  ShareCode code;             // rebuilt from the ids, so nothing must be typed
+  long long match_time = 0;   // unix time
+  std::string demo_url;       // empty once Valve has expired the demo
+};
+
+// Asks the helper for the account's recent matches - the same list CS2 shows
+// under Watch > Your Matches. Runs `<command> recent`, which prints one
+// "MATCH <matchid> <outcomeid> <token> <time> <url>" line per match.
+bool ListRecentMatches(const std::string& command,
+                       std::vector<RemoteMatch>* matches, std::string* error);
+
 // Default cache directory: %LOCALAPPDATA%/cs2-match-viewer on Windows,
 // $XDG_CACHE_HOME or ~/.cache/cs2-match-viewer elsewhere.
 std::string DefaultCacheDir();
@@ -104,6 +117,18 @@ std::vector<std::string> Cs2ReplayDirectories();
 // code's *outcome* id (the reservation id), not the match id - both are
 // checked. Returns false when nothing matches.
 bool FindDownloadedDemo(const ShareCode& code, std::string* path);
+
+// One demo CS2 has already downloaded.
+struct LocalDemo {
+  std::string path;
+  std::uint64_t id = 0;         // the reservation id out of the filename
+  std::uint64_t size_bytes = 0;
+  long long modified_unix = 0;  // when the game finished downloading it
+};
+
+// Every demo in every CS2 replay folder, newest first. This is what makes a
+// "recent matches" list possible without asking Steam anything.
+std::vector<LocalDemo> ListDownloadedDemos();
 
 }  // namespace cs2mv
 

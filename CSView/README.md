@@ -11,9 +11,15 @@ cs2mv add    CSGO-Cji4Z-... http://replay191.valve.net/730/003693....dem.bz2
 cs2mv parse  match.dem --pretty
 ```
 
-The UI shows the map and score, a scoreboard (K/D/A, ADR, HS%, MVPs, entry
-kills, flashes, utility damage), a round-by-round timeline and a per-round kill
-feed.
+The UI opens with **Your matches** - every demo CS2 has downloaded on this
+machine, newest first, one click to open. No share code needed, and no Steam:
+the replay folders are known and each demo's first frame names its map. With
+the Steam helper signed in, a button also pulls the account's full match
+history from the game coordinator, share codes and all.
+
+Opening a match shows the map and score, a scoreboard (K/D/A, ADR, HS%, MVPs,
+entry kills, flashes, utility damage), a round-by-round timeline and a
+per-round kill feed.
 
 ---
 

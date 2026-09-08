@@ -60,6 +60,20 @@ struct DemoFrame {
   std::string body;       // decompressed protobuf payload
 };
 
+// The handful of facts in a demo's first frame.
+struct DemoSummary {
+  std::string map_name;
+  std::string server_name;
+  std::string client_name;
+  int build_number = 0;
+};
+
+// Reads just the CDemoFileHeader, which is the first frame in the file, so
+// this costs a few kilobytes rather than the few hundred megabytes a full
+// Init would. Used to label a list of demos without parsing any of them.
+bool ReadDemoSummary(const std::string& path, DemoSummary* out,
+                     std::string* error);
+
 // Iterates the frames of a demo held in memory.
 class DemoReader {
  public:

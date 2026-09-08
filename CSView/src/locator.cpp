@@ -1,7 +1,10 @@
 ﻿#include "cs2mv/locator.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <chrono>
+#include <ctime>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -171,30 +174,6 @@ std::vector<std::string> LibrariesIn(const std::string& steam_root) {
 
 }  // namespace
 
-std::vector<std::string> Cs2ReplayDirectories() {
-  std::vector<std::string> found;
-  for (const std::string& root : SteamRoots()) {
-    for (const std::string& library : LibrariesIn(root)) {
-      const std::string dir = library +
-          "/steamapps/common/Counter-Strike Global Offensive/game/csgo/replays";
-      std::error_code ec;
-      if (!std::filesystem::is_directory(dir, ec)) continue;
-      // Different roots routinely resolve to the same directory.
-      const std::string key = std::filesystem::absolute(dir, ec).string();
-      bool seen = false;
-      for (const std::string& existing : found) {
-        std::error_code cmp;
-        if (std::filesystem::equivalent(existing, key, cmp)) {
-          seen = true;
-          break;
-        }
-      }
-      if (!seen) found.push_back(key);
-    }
-  }
-  return found;
-}
-
 namespace {
 
 // Pulls the id out of a CS2 demo filename:
@@ -226,6 +205,68 @@ std::uint64_t DemoFileId(const std::string& filename) {
 }
 
 }  // namespace
+
+std::vector<std::string> Cs2ReplayDirectories() {
+  std::vector<std::string> found;
+  for (const std::string& root : SteamRoots()) {
+    for (const std::string& library : LibrariesIn(root)) {
+      const std::string dir = library +
+          "/steamapps/common/Counter-Strike Global Offensive/game/csgo/replays";
+      std::error_code ec;
+      if (!std::filesystem::is_directory(dir, ec)) continue;
+      // Different roots routinely resolve to the same directory.
+      const std::string key = std::filesystem::absolute(dir, ec).string();
+      bool seen = false;
+      for (const std::string& existing : found) {
+        std::error_code cmp;
+        if (std::filesystem::equivalent(existing, key, cmp)) {
+          seen = true;
+          break;
+        }
+      }
+      if (!seen) found.push_back(key);
+    }
+  }
+  return found;
+}
+
+std::vector<LocalDemo> ListDownloadedDemos() {
+  std::vector<LocalDemo> demos;
+  for (const std::string& dir : Cs2ReplayDirectories()) {
+    std::error_code ec;
+    std::filesystem::directory_iterator it(dir, ec), end;
+    if (ec) continue;
+    for (; it != end; it.increment(ec)) {
+      if (ec) break;
+      const std::filesystem::path& p = it->path();
+      if (p.extension() != ".dem") continue;
+
+      LocalDemo demo;
+      demo.path = p.string();
+      demo.id = DemoFileId(p.filename().string());
+
+      std::error_code stat_ec;
+      demo.size_bytes = static_cast<std::uint64_t>(
+          std::filesystem::file_size(p, stat_ec));
+      const auto written = std::filesystem::last_write_time(p, stat_ec);
+      if (!stat_ec) {
+        // file_time_type has no portable epoch until C++20, so anchor it
+        // against the clock's own now().
+        const auto now_file = std::filesystem::file_time_type::clock::now();
+        const auto age = std::chrono::duration_cast<std::chrono::seconds>(
+            now_file - written);
+        demo.modified_unix =
+            static_cast<long long>(std::time(nullptr)) - age.count();
+      }
+      demos.push_back(std::move(demo));
+    }
+  }
+  std::sort(demos.begin(), demos.end(),
+            [](const LocalDemo& a, const LocalDemo& b) {
+              return a.modified_unix > b.modified_unix;
+            });
+  return demos;
+}
 
 bool FindDownloadedDemo(const ShareCode& code, std::string* path) {
   if (code.outcome_id == 0 && code.match_id == 0) return false;
@@ -327,6 +368,63 @@ bool RunGcHelper(const std::string& command, const ShareCode& code,
                           std::to_string(status) + "):\n" + Trim(output));
   }
   return Err(error, "the helper printed no URL:\n" + Trim(output));
+}
+
+bool ListRecentMatches(const std::string& command,
+                       std::vector<RemoteMatch>* matches, std::string* error) {
+  if (command.empty()) return Err(error, "no game coordinator helper configured");
+
+  const std::string line = command + " recent 2>&1";
+#ifdef _WIN32
+  FILE* pipe = ::_popen(line.c_str(), "r");
+#else
+  FILE* pipe = ::popen(line.c_str(), "r");
+#endif
+  if (pipe == nullptr) return Err(error, "cannot run helper: " + command);
+
+  std::string output;
+  char buffer[4096];
+  while (std::fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+    output += buffer;
+    if (output.size() > (1u << 20)) break;
+  }
+#ifdef _WIN32
+  ::_pclose(pipe);
+#else
+  ::pclose(pipe);
+#endif
+
+  std::istringstream lines(output);
+  std::string text;
+  std::string first_error;
+  while (std::getline(lines, text)) {
+    const std::string row = Trim(text);
+    if (row.compare(0, 6, "ERROR ") == 0) {
+      if (first_error.empty()) first_error = row.substr(6);
+      continue;
+    }
+    if (row.compare(0, 6, "MATCH ") != 0) continue;
+
+    std::istringstream fields(row.substr(6));
+    RemoteMatch match;
+    std::string url;
+    unsigned long long match_id = 0, outcome_id = 0;
+    unsigned long token = 0;
+    if (!(fields >> match_id >> outcome_id >> token >> match.match_time >> url)) {
+      continue;
+    }
+    match.code.match_id = match_id;
+    match.code.outcome_id = outcome_id;
+    match.code.token = static_cast<std::uint16_t>(token);
+    if (url != "-") match.demo_url = url;
+    matches->push_back(std::move(match));
+  }
+
+  if (matches->empty() && !first_error.empty()) return Err(error, first_error);
+  if (matches->empty()) {
+    return Err(error, "the helper listed no matches:\n" + Trim(output));
+  }
+  return true;
 }
 
 bool FetchDemo(const std::string& url, const std::string& dest,

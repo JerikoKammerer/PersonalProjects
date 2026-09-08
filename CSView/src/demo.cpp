@@ -5,6 +5,7 @@
 #include <sstream>
 
 #include "cs2mv/bzip2.h"
+#include "cs2mv/protobuf.h"
 #include "cs2mv/snappy.h"
 
 namespace cs2mv {
@@ -38,6 +39,46 @@ const char* DemoCommandName(int kind) {
     case kDemRecovery: return "DEM_Recovery";
     default: return "DEM_Unknown";
   }
+}
+
+bool ReadDemoSummary(const std::string& path, DemoSummary* out,
+                     std::string* error) {
+  // The header frame sits at the very front and is a few hundred bytes; this
+  // is generous enough to cover it without reading the whole demo.
+  constexpr std::size_t kPrefixBytes = 128 * 1024;
+
+  std::ifstream f(path, std::ios::binary);
+  if (!f) {
+    if (error != nullptr) *error = "cannot open " + path;
+    return false;
+  }
+  std::string prefix(kPrefixBytes, '\0');
+  f.read(&prefix[0], static_cast<std::streamsize>(kPrefixBytes));
+  prefix.resize(static_cast<std::size_t>(f.gcount()));
+
+  DemoReader reader;
+  if (!reader.Init(std::move(prefix), error)) return false;
+
+  DemoFrame frame;
+  while (reader.Next(&frame)) {
+    if (frame.kind != kDemFileHeader) continue;
+    // CDemoFileHeader { server_name = 3, client_name = 4, map_name = 5,
+    //                   build_num = 13 }
+    pb::Reader r(frame.body);
+    std::uint32_t field = 0;
+    while (r.NextField(&field)) {
+      switch (field) {
+        case 3: out->server_name = r.ReadString(); break;
+        case 4: out->client_name = r.ReadString(); break;
+        case 5: out->map_name = r.ReadString(); break;
+        case 13: out->build_number = r.ReadInt32(); break;
+        default: break;
+      }
+    }
+    return true;
+  }
+  if (error != nullptr) *error = "no header frame in " + path;
+  return false;
 }
 
 bool DemoReader::Open(const std::string& path, std::string* error) {

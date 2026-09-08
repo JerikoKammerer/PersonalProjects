@@ -370,3 +370,128 @@ async function steamSignOut() {
 $('steam-signin').addEventListener('click', steamSignIn);
 $('steam-signout').addEventListener('click', steamSignOut);
 steamStatus();
+
+// --- Your matches --------------------------------------------------------
+//
+// Demos CS2 has already downloaded. Listing them needs no Steam and no share
+// code: the folders are known, and each demo's first frame names its map.
+
+function formatBytes(n) {
+  if (!n) return '';
+  const mb = n / (1024 * 1024);
+  return mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : Math.round(mb) + ' MB';
+}
+
+function formatWhen(unix) {
+  if (!unix) return '';
+  const then = new Date(unix * 1000);
+  const days = Math.floor((Date.now() - then.getTime()) / 86400000);
+  if (days <= 0) return 'today';
+  if (days === 1) return 'yesterday';
+  if (days < 30) return days + ' days ago';
+  return then.toLocaleDateString();
+}
+
+async function loadRecent() {
+  let payload;
+  try {
+    payload = await (await fetch('/api/matches')).json();
+  } catch (err) {
+    return;
+  }
+  const box = $('recent');
+  const list = $('recent-list');
+  list.innerHTML = '';
+  box.hidden = false;
+
+  if (!payload.matches || payload.matches.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'recent-empty';
+    empty.textContent =
+      'No demos downloaded yet. In CS2, open Watch → Your Matches and click ' +
+      'Download on a match; it will show up here.';
+    list.appendChild(empty);
+    return;
+  }
+
+  for (const m of payload.matches) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'recent-item';
+
+    const map = document.createElement('span');
+    map.className = 'map';
+    map.textContent = m.map || 'unknown map';
+    const when = document.createElement('span');
+    when.className = 'when';
+    when.textContent = formatWhen(m.modified);
+    const size = document.createElement('span');
+    size.className = 'size';
+    size.textContent = formatBytes(m.sizeBytes);
+
+    row.appendChild(map);
+    row.appendChild(when);
+    row.appendChild(size);
+    row.title = m.path;
+    row.addEventListener('click', () => {
+      $('code').value = m.path;
+      load(m.path);
+    });
+    list.appendChild(row);
+  }
+}
+
+loadRecent();
+
+// Match history from the game coordinator: everything played recently, not
+// just what happens to be on disk. Needs the signed-in helper, so it is behind
+// a button rather than loaded with the page.
+async function loadRemote() {
+  const button = $('recent-fetch');
+  const note = $('recent-fetch-note');
+  button.disabled = true;
+  note.textContent = 'Asking Steam…';
+  try {
+    const response = await fetch('/api/matches/remote');
+    const payload = await response.json();
+    if (!response.ok) {
+      note.textContent = payload.error || 'could not reach the game coordinator';
+      return;
+    }
+    const list = $('remote-list');
+    list.innerHTML = '';
+    note.textContent = `${payload.matches.length} from Steam — click to fetch and open`;
+    for (const m of payload.matches) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'recent-item' + (m.expired ? ' expired' : '');
+      const code = document.createElement('span');
+      code.className = 'map';
+      code.textContent = m.shareCode;
+      const when = document.createElement('span');
+      when.className = 'when';
+      when.textContent = m.matchTime ? formatWhen(m.matchTime) : '';
+      const state = document.createElement('span');
+      state.className = 'size';
+      state.textContent = m.expired ? 'expired' : 'available';
+      row.appendChild(code);
+      row.appendChild(when);
+      row.appendChild(state);
+      if (!m.expired) {
+        row.addEventListener('click', () => {
+          $('code').value = m.shareCode;
+          load(m.shareCode);
+        });
+      } else {
+        row.title = 'Valve keeps match demos for about 30 days';
+      }
+      list.appendChild(row);
+    }
+  } catch (err) {
+    note.textContent = String(err);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+$('recent-fetch').addEventListener('click', loadRemote);
