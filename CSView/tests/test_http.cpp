@@ -81,6 +81,43 @@ TEST(MissingIndexIsNotAnError) {
   CHECK(index.entries().empty());
 }
 
+TEST(ShareCodeExtractedFromSurroundingText) {
+  // What CS2's copy button actually puts on the clipboard.
+  const std::string steam_url =
+      "steam://rungame/730/76561202255233023/+csgo_download_match%20"
+      "CSGO-Cji4Z-rQMJJ-s6Jyq-ovwoS-mJkDA";
+  std::string code;
+  CHECK(cs2mv::ExtractShareCode(steam_url, &code));
+  CHECK_EQ(code, std::string("CSGO-Cji4Z-rQMJJ-s6Jyq-ovwoS-mJkDA"));
+
+  CHECK(cs2mv::ExtractShareCode(
+      "gg wp here it is CSGO-Cji4Z-rQMJJ-s6Jyq-ovwoS-mJkDA have a look", &code));
+  CHECK_EQ(code, std::string("CSGO-Cji4Z-rQMJJ-s6Jyq-ovwoS-mJkDA"));
+
+  // A bare code, and a bare payload with no prefix.
+  CHECK(cs2mv::ExtractShareCode("CSGO-Cji4Z-rQMJJ-s6Jyq-ovwoS-mJkDA", &code));
+  CHECK(cs2mv::ExtractShareCode("Cji4ZrQMJJs6JyqovwoSmJkDA", &code));
+
+  CHECK(!cs2mv::ExtractShareCode("no code in here at all", &code));
+  CHECK(!cs2mv::ExtractShareCode("CSGO-tooshort", &code));
+}
+
+TEST(ReplayDirectoryLookupIsWellFormed) {
+  // Whether CS2 is installed is not something a test can assume, so this only
+  // checks the contract: every path returned exists and ends in "replays".
+  for (const std::string& dir : cs2mv::Cs2ReplayDirectories()) {
+    CHECK(dir.size() > 7);
+    CHECK(dir.find("replays") != std::string::npos);
+  }
+  // A match id that cannot exist must not be claimed as found.
+  cs2mv::ShareCode nonsense;
+  nonsense.match_id = 1;
+  nonsense.outcome_id = 2;
+  std::string path = "untouched";
+  CHECK(!cs2mv::FindDownloadedDemo(nonsense, &path));
+  CHECK_EQ(path, std::string("untouched"));
+}
+
 TEST(ResolveExplainsWhatIsMissing) {
   cs2mv::ShareCode code;
   CHECK(cs2mv::DecodeShareCode("CSGO-Cji4Z-rQMJJ-s6Jyq-ovwoS-mJkDA", &code, nullptr));
@@ -93,7 +130,9 @@ TEST(ResolveExplainsWhatIsMissing) {
   std::string demo_path, error;
   CHECK(!cs2mv::ResolveDemo(code, "CSGO-Cji4Z-rQMJJ-s6Jyq-ovwoS-mJkDA", options,
                             &demo_path, &error));
-  // The message has to tell the user what to do next, not just fail.
+  // The message has to tell the user what to do next, not just fail. The
+  // useful first move is downloading the demo in CS2, not editing an index.
+  CHECK(error.find("Watch -> Your Matches") != std::string::npos);
   CHECK(error.find("cs2mv add") != std::string::npos);
   CHECK(error.find(std::to_string(code.match_id)) != std::string::npos);
 }

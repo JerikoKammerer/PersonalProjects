@@ -47,6 +47,15 @@ std::string EncodeShareCode(const ShareCode& sc);
 bool NormalizeShareCode(const std::string& code, std::string* out,
                         std::string* error);
 
+// Pulls a share code out of surrounding text. CS2's "copy" button hands out a
+// whole Steam URL rather than a bare code:
+//
+//   steam://rungame/730/76561202255233023/+csgo_download_match%20CSGO-xxxxx-...
+//
+// so accept that, a chat message, or anything else with a code embedded in it.
+// Returns false when no well-formed code is present.
+bool ExtractShareCode(const std::string& text, std::string* code);
+
 }  // namespace cs2mv
 
 #endif  // CS2MV_SHARECODE_H_

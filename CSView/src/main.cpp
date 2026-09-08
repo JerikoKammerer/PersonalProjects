@@ -129,22 +129,24 @@ bool FileExists(const std::string& path) {
   return static_cast<bool>(f);
 }
 
-// A target is treated as a share code when it decodes as one and there is no
-// file by that name, so an oddly named demo still wins.
-bool LooksLikeShareCode(const std::string& s) {
+// A target is treated as a share code when a code can be pulled out of it and
+// there is no file by that name, so an oddly named demo still wins. The text
+// need not be a bare code: CS2's copy button hands out a steam:// URL, and
+// people paste codes with words around them.
+bool LooksLikeShareCode(const std::string& s, std::string* code) {
   if (FileExists(s)) return false;
-  ShareCode ignored;
-  return DecodeShareCode(s, &ignored, nullptr);
+  return ExtractShareCode(s, code);
 }
 
 // Loads a match from either a demo file path or a share code.
 bool LoadMatch(const std::string& target, const Options& options, Match* match,
                std::string* error) {
   std::string demo_path = target;
+  std::string code_text;
 
-  if (LooksLikeShareCode(target)) {
+  if (LooksLikeShareCode(target, &code_text)) {
     ShareCode code;
-    if (!DecodeShareCode(target, &code, error)) return false;
+    if (!DecodeShareCode(code_text, &code, error)) return false;
     ResolveOptions resolve = MakeResolveOptions(options);
     resolve.progress = [](std::uint64_t done, std::uint64_t total) {
       if (total > 0) {
@@ -156,10 +158,10 @@ bool LoadMatch(const std::string& target, const Options& options, Match* match,
                      static_cast<unsigned long long>(done >> 20));
       }
     };
-    if (!ResolveDemo(code, target, resolve, &demo_path, error)) return false;
+    if (!ResolveDemo(code, code_text, resolve, &demo_path, error)) return false;
     std::fprintf(stderr, "\r");
 
-    match->share_code = target;
+    match->share_code = code_text;
     match->match_id = code.match_id;
     match->outcome_id = code.outcome_id;
     match->token = code.token;

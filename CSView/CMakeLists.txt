@@ -36,7 +36,8 @@ target_include_directories(cs2mv PUBLIC include PRIVATE src)
 find_package(Threads REQUIRED)
 target_link_libraries(cs2mv PUBLIC Threads::Threads)
 if(WIN32)
-  target_link_libraries(cs2mv PUBLIC ws2_32)
+  # ws2_32 for sockets, advapi32 for the registry lookup that finds Steam.
+  target_link_libraries(cs2mv PUBLIC ws2_32 advapi32)
 endif()
 
 add_executable(cs2mv_cli src/main.cpp)

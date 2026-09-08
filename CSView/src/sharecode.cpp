@@ -131,4 +131,41 @@ bool NormalizeShareCode(const std::string& code, std::string* out,
   return true;
 }
 
+bool ExtractShareCode(const std::string& text, std::string* code) {
+  for (std::size_t start = text.find("CSGO-"); start != std::string::npos;
+       start = text.find("CSGO-", start + 1)) {
+    // Collect alphabet characters and separators until 25 payload characters
+    // have been seen, then check that what was gathered actually decodes.
+    std::string candidate;
+    int payload = 0;
+    for (std::size_t i = start; i < text.size() && payload < kPayloadChars; ++i) {
+      const char c = text[i];
+      if (c == '-') {
+        candidate.push_back(c);
+        continue;
+      }
+      if (AlphabetIndex(c) < 0) break;
+      candidate.push_back(c);
+      // The four letters of the "CSGO" prefix are themselves alphabet
+      // characters, so they must not be counted towards the payload.
+      if (candidate.size() > 5) ++payload;
+    }
+    if (payload < kPayloadChars) continue;
+
+    ShareCode ignored;
+    if (DecodeShareCode(candidate, &ignored, nullptr)) {
+      *code = candidate;
+      return true;
+    }
+  }
+
+  // No prefix: maybe the text is (or contains) a bare code already.
+  ShareCode ignored;
+  if (DecodeShareCode(text, &ignored, nullptr)) {
+    *code = text;
+    return true;
+  }
+  return false;
+}
+
 }  // namespace cs2mv

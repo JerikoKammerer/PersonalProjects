@@ -84,12 +84,27 @@ So the project splits the problem:
   SDK. Send message 9147 with the body from `gc-request`, take the URL out of
   the reply, then `cs2mv add <share code> <url>`.
 
-Two shortcuts that avoid Steam entirely:
+### The shortcut that avoids Steam entirely
 
-* CS2 shows the demo download link in **Watch → Your Matches**. Copy it and
-  `cs2mv add`.
-* If you already downloaded the demo, point at the file:
-  `cs2mv add CSGO-... C:\path\to\match.dem`, or just `cs2mv parse match.dem`.
+**If the match is already downloaded, a share code is all you need.** Click
+Download in CS2 under *Watch → Your Matches*, then paste the code into the web
+UI or hand it to `cs2mv parse`. There is no `add` step:
+
+* every CS2 replay folder on the machine is searched, across all Steam
+  libraries - the Steam install is found through the registry, and
+  `steamapps/libraryfolders.vdf` gives the rest, so a library on another drive
+  or under OneDrive is found like any other;
+* demos are named `match730_<21 digit id>_....dem`, where that id is the share
+  code's **outcome** id, and the id is parsed out of the name rather than
+  searched for, so a short id cannot match by accident;
+* the hit is written into the index, so the next lookup skips the search.
+
+Input is forgiving: a bare code, a code with text around it, or the whole
+`steam://rungame/730/.../+csgo_download_match%20CSGO-...` URL that CS2's copy
+button produces all work.
+
+Failing that, point at a file or URL yourself - `cs2mv add CSGO-...
+C:\path\to\match.dem` - or just `cs2mv parse match.dem`.
 
 Registered URLs are downloaded and unpacked on first use into the cache
 (`%LOCALAPPDATA%\cs2-match-viewer` / `~/.cache/cs2-match-viewer`). Valve keeps

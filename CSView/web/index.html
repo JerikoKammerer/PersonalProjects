@@ -11,7 +11,7 @@
   <h1>CS2 Match Viewer</h1>
   <form id="lookup" autocomplete="off">
     <input id="code" name="code" spellcheck="false"
-           placeholder="CSGO-xxxxx-xxxxx-xxxxx-xxxxx-xxxxx  or  a path to a .dem file">
+           placeholder="Paste a share code, a steam:// match link, or a path to a .dem file">
     <button type="submit">Open</button>
   </form>
   <p id="status" class="status"></p>
@@ -71,10 +71,17 @@
 
 <footer>
   <p>
-    A share code holds only a match id, an outcome id and a token. Turning one
-    into a demo download needs the CS2 game coordinator, so this viewer reads
-    the demo from a local file or a URL you register with
-    <code>cs2mv add</code>.
+    Paste a share code and the viewer finds the demo itself: it searches every
+    CS2 replay folder on this machine, across all Steam libraries, and matches
+    on the id in the filename. So if the match is one you have downloaded in
+    CS2 under <em>Watch → Your Matches</em>, it just opens.
+  </p>
+  <p>
+    If it is not downloaded yet there is nothing the viewer can do on its own.
+    A share code holds only a match id, an outcome id and a token — no link —
+    and only the CS2 game coordinator can turn one into a URL, which needs a
+    logged-in Steam session. Click Download in CS2 and paste the code again, or
+    register a file or URL yourself with <code>cs2mv add</code>.
   </p>
 </footer>
 

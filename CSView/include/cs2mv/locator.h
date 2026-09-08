@@ -17,9 +17,11 @@
 #ifndef CS2MV_LOCATOR_H_
 #define CS2MV_LOCATOR_H_
 
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <string>
+#include <vector>
 
 #include "cs2mv/sharecode.h"
 
@@ -69,6 +71,18 @@ bool FetchDemo(const std::string& url, const std::string& dest,
 // Default cache directory: %LOCALAPPDATA%/cs2-match-viewer on Windows,
 // $XDG_CACHE_HOME or ~/.cache/cs2-match-viewer elsewhere.
 std::string DefaultCacheDir();
+
+// Every CS2 replay directory on this machine, across all Steam library
+// folders. Empty when Steam or CS2 is not installed.
+std::vector<std::string> Cs2ReplayDirectories();
+
+// Looks for a demo the game already downloaded, so that clicking Download in
+// CS2 is the whole workflow and no URL is needed.
+//
+// CS2 names them match730_<21 digit id>_<...>.dem, and that id is the share
+// code's *outcome* id (the reservation id), not the match id - both are
+// checked. Returns false when nothing matches.
+bool FindDownloadedDemo(const ShareCode& code, std::string* path);
 
 }  // namespace cs2mv
 
