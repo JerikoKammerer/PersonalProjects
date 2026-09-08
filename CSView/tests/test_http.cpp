@@ -118,6 +118,35 @@ TEST(ReplayDirectoryLookupIsWellFormed) {
   CHECK_EQ(path, std::string("untouched"));
 }
 
+TEST(GcHelperContract) {
+  cs2mv::ShareCode code;
+  code.match_id = 123;
+  code.outcome_id = 456;
+  code.token = 7;
+  std::string url;
+  std::string error;
+
+  // `echo` behaves the same under cmd.exe and sh, which is all the contract
+  // needs: print a URL, exit 0.
+  CHECK(cs2mv::RunGcHelper("echo http://replay1.valve.net/730/x.dem.bz2", code,
+                           &url, &error));
+  CHECK_EQ(url, std::string("http://replay1.valve.net/730/x.dem.bz2"));
+
+  // A helper is allowed to chatter; the URL still has to be found.
+  url.clear();
+  CHECK(cs2mv::RunGcHelper(
+      "echo connecting... http://replay2.valve.net/730/y.dem.bz2 done", code,
+      &url, &error));
+  CHECK_EQ(url, std::string("http://replay2.valve.net/730/y.dem.bz2"));
+
+  // Succeeded but said nothing useful.
+  CHECK(!cs2mv::RunGcHelper("echo nothing to report", code, &url, &error));
+  CHECK(error.find("no URL") != std::string::npos);
+
+  // Not configured at all.
+  CHECK(!cs2mv::RunGcHelper("", code, &url, &error));
+}
+
 TEST(ResolveExplainsWhatIsMissing) {
   cs2mv::ShareCode code;
   CHECK(cs2mv::DecodeShareCode("CSGO-Cji4Z-rQMJJ-s6Jyq-ovwoS-mJkDA", &code, nullptr));

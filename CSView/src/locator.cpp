@@ -1,6 +1,8 @@
 ﻿#include "cs2mv/locator.h"
 
+#include <cctype>
 #include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -271,6 +273,62 @@ std::string DefaultCacheDir() {
 #endif
 }
 
+namespace {
+
+// Finds the first http(s) URL in arbitrary text, so a helper that also logs
+// progress to stdout still works.
+bool FirstUrlIn(const std::string& text, std::string* url) {
+  const std::size_t start = text.find("http://") != std::string::npos
+                                ? text.find("http://")
+                                : text.find("https://");
+  if (start == std::string::npos) return false;
+  std::size_t end = start;
+  while (end < text.size() && !std::isspace(static_cast<unsigned char>(text[end])) &&
+         text[end] != '"' && text[end] != '\'') {
+    ++end;
+  }
+  *url = text.substr(start, end - start);
+  return !url->empty();
+}
+
+}  // namespace
+
+bool RunGcHelper(const std::string& command, const ShareCode& code,
+                 std::string* url, std::string* error) {
+  if (command.empty()) return Err(error, "no game coordinator helper configured");
+
+  // The helper's own diagnostics are worth showing, so stderr is folded into
+  // what gets captured.
+  const std::string line = command + " " + std::to_string(code.match_id) + " " +
+                           std::to_string(code.outcome_id) + " " +
+                           std::to_string(code.token) + " 2>&1";
+#ifdef _WIN32
+  FILE* pipe = ::_popen(line.c_str(), "r");
+#else
+  FILE* pipe = ::popen(line.c_str(), "r");
+#endif
+  if (pipe == nullptr) return Err(error, "cannot run helper: " + command);
+
+  std::string output;
+  char buffer[4096];
+  while (std::fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+    output += buffer;
+    if (output.size() > (1u << 20)) break;  // a helper gone haywire
+  }
+#ifdef _WIN32
+  const int status = ::_pclose(pipe);
+#else
+  const int status = ::pclose(pipe);
+#endif
+
+  if (FirstUrlIn(output, url)) return true;
+  if (status != 0) {
+    return Err(error, "the game coordinator helper failed (exit " +
+                          std::to_string(status) + "):\n" + Trim(output));
+  }
+  return Err(error, "the helper printed no URL:\n" + Trim(output));
+}
+
 bool FetchDemo(const std::string& url, const std::string& dest,
                const ResolveOptions& options, std::string* error) {
   HttpGetOptions get;
@@ -373,6 +431,21 @@ bool ResolveDemo(const ShareCode& code, const std::string& code_text,
     return true;
   }
 
+  // Nothing local and no known URL: ask the game coordinator, if a helper has
+  // been set up to do that.
+  if (!options.gc_helper.empty() && options.allow_download) {
+    std::string url;
+    std::string helper_error;
+    if (RunGcHelper(options.gc_helper, code, &url, &helper_error)) {
+      if (!FetchDemo(url, cached, options, error)) return false;
+      *demo_path = cached;
+      index.Set(canonical, url);
+      index.Save(index_path, nullptr);
+      return true;
+    }
+    return Err(error, helper_error);
+  }
+
   const std::vector<std::string> replay_dirs = Cs2ReplayDirectories();
   std::string message =
       "That match is not on this machine yet.\n"
@@ -391,6 +464,12 @@ bool ResolveDemo(const ShareCode& code, const std::string& code_text,
   } else {
     message += "\nLooked in:\n";
     for (const std::string& dir : replay_dirs) message += "  " + dir + "\n";
+  }
+  if (options.gc_helper.empty()) {
+    message +=
+        "\nTo pull matches without downloading them in CS2 first, set up a game "
+        "coordinator helper and pass --gc-helper. See tools/steam-gc-helper and "
+        "the README.\n";
   }
   message += "\nOr point at it directly, if you have the file or a URL:\n"
              "  cs2mv add " + canonical + " C:\\path\\to\\match.dem\n"

@@ -6,3 +6,4 @@ cmake-build-*/
 !tests/data/synthetic.dem.bz2
 tests/data/test_index.txt
 tests/data/empty_cache/
+node_modules/

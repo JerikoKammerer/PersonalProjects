@@ -72,17 +72,23 @@ means a Steam login, an app ticket and the Steam GC message framing — a
 dependency this project does not take on, and one no library can remove
 because Valve requires the account.
 
-So the project splits the problem:
+So the project splits the problem, and there are three ways in, cheapest first:
 
-* **Implemented here** — [`include/cs2mv/gc.h`](include/cs2mv/gc.h) builds the
-  request body and parses the reply, including the demo URL and the players'
-  Steam ids. `cs2mv gc-request <share code>` prints the exact bytes to send.
-* **Yours to bridge** — the Steam session itself. Any Steam client library
-  works: [SteamKit2](https://github.com/SteamRE/SteamKit) (C#),
-  [ValvePython/steam](https://github.com/ValvePython/steam) (Python),
-  [go-steam](https://github.com/Philipp15b/go-steam) (Go), or the Steamworks
-  SDK. Send message 9147 with the body from `gc-request`, take the URL out of
-  the reply, then `cs2mv add <share code> <url>`.
+1. **The match is already downloaded** — nothing to do, the local search finds
+   it from the share code alone. See below.
+2. **A helper asks the GC for you** — `tools/steam-gc-helper`, wired in with
+   `--gc-helper`. Credentials live there and only there.
+3. **You supply the URL** — `cs2mv add <share code> <url>`.
+   [`include/cs2mv/gc.h`](include/cs2mv/gc.h) builds the request body and parses
+   the reply, and `cs2mv gc-request <share code>` prints the exact bytes, if you
+   would rather drive the GC from your own Steam client
+   ([SteamKit2](https://github.com/SteamRE/SteamKit),
+   [ValvePython/steam](https://github.com/ValvePython/steam),
+   [go-steam](https://github.com/Philipp15b/go-steam)).
+
+The one thing that stays out of this codebase in every case is a Steam
+credential. Nothing here reads a password, stores one, or offers a field to
+type one into.
 
 ### The shortcut that avoids Steam entirely
 
@@ -105,6 +111,46 @@ button produces all work.
 
 Failing that, point at a file or URL yourself - `cs2mv add CSGO-...
 C:\path\to\match.dem` - or just `cs2mv parse match.dem`.
+
+### Fetching matches CS2 has not downloaded
+
+For a match that is not on the machine at all, something has to ask the game
+coordinator, and that means Steam credentials. Those live in a separate program
+that owns them, never in this codebase and never in a browser form:
+
+```
+<helper> <match id> <outcome id> <token>
+  stdout: the demo URL, exit status 0
+  stderr: an explanation, non-zero exit status
+```
+
+That is the entire contract, so the helper can be written in anything.
+[`tools/steam-gc-helper`](tools/steam-gc-helper) is a Node implementation built
+on `steam-user` and `globaloffensive`:
+
+```bash
+cd tools/steam-gc-helper && npm install && node gc-helper.js login
+```
+
+Login is by **QR code scanned with the Steam mobile app**, so no password is
+typed, and what gets stored is a **refresh token** - never a password - in
+`~/.cs2mv-steam.json`, owner-only. Revoke it from Steam → Settings → Security,
+or by deleting that file.
+
+Then point cs2mv at it, by flag or environment variable:
+
+```bash
+cs2mv serve --gc-helper "node tools/steam-gc-helper/gc-helper.js"
+```
+
+Resolution only reaches the helper after the local searches have failed, and a
+URL it returns is cached in the index, so each match costs one Steam round trip
+at most.
+
+Worth knowing before enabling it: logging into Steam from a third-party client
+is widely done and rarely punished, but it is not something Valve formally
+blesses, and the risk is yours. Downloading the match in CS2 and letting the
+local search find it avoids the question entirely.
 
 Registered URLs are downloaded and unpacked on first use into the cache
 (`%LOCALAPPDATA%\cs2-match-viewer` / `~/.cache/cs2-match-viewer`). Valve keeps

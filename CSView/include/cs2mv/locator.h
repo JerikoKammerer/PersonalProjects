@@ -54,6 +54,9 @@ struct ResolveOptions {
   std::string index_path;   // defaults to <cache_dir>/index.txt
   std::string cache_dir;    // where downloads are unpacked
   bool allow_download = true;
+  // Command that turns a share code into a demo URL by asking the CS2 game
+  // coordinator. Empty disables the lookup. See RunGcHelper.
+  std::string gc_helper;
   // Reports download progress as (bytes, total). Total is 0 when unknown.
   std::function<void(std::uint64_t, std::uint64_t)> progress;
 };
@@ -67,6 +70,24 @@ bool ResolveDemo(const ShareCode& code, const std::string& code_text,
 // Downloads `url`, unpacks it if it is bzip2, and writes it to `dest`.
 bool FetchDemo(const std::string& url, const std::string& dest,
                const ResolveOptions& options, std::string* error);
+
+// Asks an external helper for a match's demo URL.
+//
+// Only the CS2 game coordinator can turn a share code into a download link,
+// and it answers only a logged-in Steam client. Rather than build a Steam
+// client - and rather than ever handle a Steam password - that job is delegated
+// to a separate program that owns its own credentials. The contract is
+// deliberately tiny, so it can be written in anything:
+//
+//   <command> <match id> <outcome id> <token>
+//     stdout: the demo URL, on success, exit status 0
+//     stderr: an explanation, on failure, with a non-zero exit status
+//
+// Any other chatter on stdout is ignored; the first http URL found wins.
+// tools/steam-gc-helper is one implementation. Returns false on failure, with
+// the helper's own stderr in `*error`.
+bool RunGcHelper(const std::string& command, const ShareCode& code,
+                 std::string* url, std::string* error);
 
 // Default cache directory: %LOCALAPPDATA%/cs2-match-viewer on Windows,
 // $XDG_CACHE_HOME or ~/.cache/cs2-match-viewer elsewhere.

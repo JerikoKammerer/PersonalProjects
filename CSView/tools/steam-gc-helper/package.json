@@ -1,0 +1,19 @@
+{
+  "name": "cs2mv-steam-gc-helper",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Turns a CS2 share code into a demo URL by asking the game coordinator. Owns its own Steam credentials so that cs2mv never has to.",
+  "main": "gc-helper.js",
+  "scripts": {
+    "login": "node gc-helper.js login"
+  },
+  "dependencies": {
+    "globaloffensive": "^3.1.2",
+    "qrcode-terminal": "^0.12.0",
+    "steam-session": "^1.9.2",
+    "steam-user": "^5.2.0"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}

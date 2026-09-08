@@ -36,6 +36,7 @@ struct Options {
   std::string web_root = "web";
   std::string cache_dir;
   std::string index_path;
+  std::string gc_helper;
   bool pretty = false;
   bool no_download = false;
 };
@@ -67,7 +68,11 @@ void PrintUsage() {
       "  --cache DIR    where downloaded demos are kept\n"
       "  --index FILE   the share code -> demo mapping (default <cache>/index.txt)\n"
       "  --pretty       indent JSON output\n"
-      "  --no-download  never fetch over the network\n";
+      "  --no-download  never fetch over the network\n"
+      "  --gc-helper C  command that turns a share code into a demo URL by asking\n"
+      "                 the CS2 game coordinator, for matches CS2 has not already\n"
+      "                 downloaded. See tools/steam-gc-helper. Also read from the\n"
+      "                 CS2MV_GC_HELPER environment variable.\n";
 }
 
 // Pulls recognised flags out of `args`, leaving positional arguments behind.
@@ -98,6 +103,9 @@ bool ParseFlags(std::vector<std::string>* args, Options* options,
     } else if (a == "--index") {
       if (!value("--index")) return false;
       options->index_path = (*args)[++i];
+    } else if (a == "--gc-helper") {
+      if (!value("--gc-helper")) return false;
+      options->gc_helper = (*args)[++i];
     } else if (a == "--pretty") {
       options->pretty = true;
     } else if (a == "--no-download") {
@@ -121,6 +129,13 @@ ResolveOptions MakeResolveOptions(const Options& options) {
   resolve.cache_dir = options.cache_dir.empty() ? DefaultCacheDir() : options.cache_dir;
   resolve.index_path = options.index_path;
   resolve.allow_download = !options.no_download;
+  resolve.gc_helper = options.gc_helper;
+  // An environment variable keeps the flag off every command line once the
+  // helper is set up.
+  if (resolve.gc_helper.empty()) {
+    const char* from_env = std::getenv("CS2MV_GC_HELPER");
+    if (from_env != nullptr) resolve.gc_helper = from_env;
+  }
   return resolve;
 }
 
