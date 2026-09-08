@@ -561,6 +561,11 @@ class MatchParser {
     const int team = static_cast<int>(args.Int("team", kTeamUnknown));
     if (team >= kTeamSpectator && team <= kTeamCT) {
       match_->players[static_cast<std::size_t>(idx)].team = team;
+      // The round this first happened in marks the halftime swap in a retail
+      // demo, and so the boundary before which sides were the other way round.
+      if (first_team_round_ < 0 && (team == kTeamT || team == kTeamCT)) {
+        first_team_round_ = static_cast<int>(match_->rounds.size()) + 1;
+      }
     }
   }
 
@@ -587,9 +592,6 @@ class MatchParser {
     k.attacker_team = TeamOf(attacker);
     k.victim_team = TeamOf(victim);
     current_.kills.push_back(k);
-
-    if (k.victim_team == kTeamT) ++round_deaths_[0];
-    if (k.victim_team == kTeamCT) ++round_deaths_[1];
 
     if (victim >= 0) match_->players[static_cast<std::size_t>(victim)].deaths++;
     if (attacker >= 0 && attacker != victim) {
@@ -645,8 +647,6 @@ class MatchParser {
     current_ = Round();
     current_.start_tick = tick_;
     round_start_tick_ = tick_;
-    round_deaths_[0] = 0;
-    round_deaths_[1] = 0;
     round_open_ = true;
   }
 
@@ -669,70 +669,77 @@ class MatchParser {
   void OnRoundOver() {
     if (!round_open_) return;
     current_.end_tick = tick_;
-    if (current_.winner == kTeamT || current_.winner == kTeamCT) {
-      Flush();
-      round_open_ = false;
-      return;
-    }
-    InferWinner();
+    // Winners are settled in ResolveRounds once the whole demo has been read;
+    // mid-read there is not enough information (see there).
     Flush();
     round_open_ = false;
   }
 
-  // Order matters: the bomb settles a round outright, otherwise a side that
-  // lost everyone lost the round, otherwise the clock ran out and the CTs kept
-  // the site.
-  void InferWinner() {
-    int roster_t = 0, roster_ct = 0;
+  // Round winners cannot be settled while the demo is being read. Retail demos
+  // announce sides only at the halftime swap, so for the whole first half
+  // nobody has a side yet. Rosters, though, are fixed for the match - the swap
+  // changes which side a roster plays, not who is on it - so once every player
+  // has a side, every round can be settled retrospectively by playing the swap
+  // backwards.
+  //
+  // Round::winner therefore identifies a team the way the scoreboard groups
+  // them, by the side they finished the match on, rather than the side they
+  // happened to be playing that round. That is what a match score means.
+  void ResolveRounds() {
+    int roster[2] = {0, 0};  // [0] the team shown as CT, [1] the team shown as T
     for (const Player& p : match_->players) {
       if (p.hltv) continue;
-      if (p.team == kTeamT) ++roster_t;
-      if (p.team == kTeamCT) ++roster_ct;
+      if (p.team == kTeamCT) ++roster[0];
+      if (p.team == kTeamT) ++roster[1];
     }
-    const int alive_t = roster_t - round_deaths_[0];
-    const int alive_ct = roster_ct - round_deaths_[1];
+    if (roster[0] == 0 || roster[1] == 0) return;  // sides never announced
 
-    // Without both rosters there is nothing to reason from: every elimination
-    // test would pass vacuously and the round would default to the CTs. Leave
-    // it undecided rather than inventing a winner. This is the normal state of
-    // affairs for the first half, because retail demos carry a single
-    // player_team burst at the halftime swap and nothing before it.
-    if (roster_t == 0 || roster_ct == 0) {
-      if (current_.bomb_exploded) {
-        current_.winner = kTeamT;
-        current_.reason = kReasonTargetBombed;
-        current_.winner_inferred = true;
-        current_.reason_text = "Target bombed (inferred)";
-      } else if (current_.bomb_defused) {
-        current_.winner = kTeamCT;
-        current_.reason = kReasonBombDefused;
-        current_.winner_inferred = true;
-        current_.reason_text = "Bomb defused (inferred)";
-      } else {
-        current_.reason_text = "winner unknown (no team data for this round)";
+    for (Round& r : match_->rounds) {
+      // An explicit round_end is authoritative; only fill in the gaps.
+      if (r.winner == kTeamT || r.winner == kTeamCT) continue;
+
+      // Before the swap, each roster was playing the other side.
+      const bool swapped = first_team_round_ > 1 && r.number < first_team_round_;
+      const int ct_roster = swapped ? 1 : 0;
+      const int t_roster = swapped ? 0 : 1;
+
+      int losses[2] = {0, 0};
+      for (const Kill& k : r.kills) {
+        if (k.victim < 0) continue;
+        const int team = match_->players[static_cast<std::size_t>(k.victim)].team;
+        if (team == kTeamCT) ++losses[0];
+        else if (team == kTeamT) ++losses[1];
       }
-      return;
-    }
 
-    current_.winner_inferred = true;
-    if (current_.bomb_exploded) {
-      current_.winner = kTeamT;
-      current_.reason = kReasonTargetBombed;
-    } else if (current_.bomb_defused) {
-      current_.winner = kTeamCT;
-      current_.reason = kReasonBombDefused;
-    } else if (roster_t > 0 && alive_t <= 0) {
-      current_.winner = kTeamCT;
-      current_.reason = kReasonCTWin;
-    } else if (roster_ct > 0 && alive_ct <= 0) {
-      current_.winner = kTeamT;
-      current_.reason = kReasonTWin;
-    } else {
-      current_.winner = kTeamCT;
-      current_.reason = kReasonTargetSaved;
+      int winner = -1;
+      if (r.bomb_exploded) {
+        winner = t_roster;
+        r.reason = kReasonTargetBombed;
+        r.reason_text = "Target bombed";
+      } else if (r.bomb_defused) {
+        winner = ct_roster;
+        r.reason = kReasonBombDefused;
+        r.reason_text = "Bomb defused";
+      } else if (losses[0] >= roster[0]) {
+        winner = 1;
+        r.reason = ct_roster == 0 ? kReasonTWin : kReasonCTWin;
+        r.reason_text = "Opponents eliminated";
+      } else if (losses[1] >= roster[1]) {
+        winner = 0;
+        r.reason = ct_roster == 1 ? kReasonTWin : kReasonCTWin;
+        r.reason_text = "Opponents eliminated";
+      } else {
+        // Nobody was wiped and the bomb never went off: the clock ran out and
+        // the CTs kept the site.
+        winner = ct_roster;
+        r.reason = kReasonTargetSaved;
+        r.reason_text = "Time expired";
+      }
+
+      r.winner = winner == 0 ? kTeamCT : kTeamT;
+      r.winner_inferred = true;
+      r.reason_text += " (inferred)";
     }
-    current_.reason_text = std::string(RoundEndReasonName(current_.reason)) +
-                           " (inferred)";
   }
 
   void OnRoundMvp(const EventArgs& args) {
@@ -769,8 +776,6 @@ class MatchParser {
     current_ = Round();
     current_.start_tick = tick_;
     round_start_tick_ = tick_;
-    round_deaths_[0] = 0;
-    round_deaths_[1] = 0;
     round_open_ = false;
   }
 
@@ -785,16 +790,9 @@ class MatchParser {
       current_ = Round();
       return;
     }
-    if (decided) {
-      if (current_.winner == kTeamT) {
-        match_->score_t++;
-      } else {
-        match_->score_ct++;
-      }
-    }
+    // The score is tallied in Finish, once ResolveRounds has settled who won
+    // what; at this point half the rounds may still be undecided.
     current_.number = static_cast<int>(match_->rounds.size()) + 1;
-    current_.score_t = match_->score_t;
-    current_.score_ct = match_->score_ct;
 
     if (!current_.kills.empty()) {
       const Kill& first = current_.kills.front();
@@ -827,6 +825,20 @@ class MatchParser {
     }
     match_->rounds_played = static_cast<int>(match_->rounds.size());
 
+    // Settle the rounds the demo never announced, then tally the score.
+    ResolveRounds();
+    match_->score_t = 0;
+    match_->score_ct = 0;
+    for (Round& r : match_->rounds) {
+      if (r.winner == kTeamT) {
+        match_->score_t++;
+      } else if (r.winner == kTeamCT) {
+        match_->score_ct++;
+      }
+      r.score_t = match_->score_t;
+      r.score_ct = match_->score_ct;
+    }
+
     int inferred = 0;
     int undecided = 0;
     for (const Round& r : match_->rounds) {
@@ -835,10 +847,19 @@ class MatchParser {
     }
     const std::string total = std::to_string(match_->rounds.size());
     if (inferred > 0) {
-      Warn("this demo carries no round_end events, so " + std::to_string(inferred) +
-           " of " + total +
-           " round winners were deduced from the bomb and elimination state "
-           "rather than read from the demo.");
+      std::string note =
+          "this demo carries no round_end events, so " + std::to_string(inferred) +
+          " of " + total +
+          " round winners were deduced from the bomb and elimination state "
+          "rather than read from the demo.";
+      if (first_team_round_ > 1) {
+        note += " Sides were first announced at round " +
+                std::to_string(first_team_round_) +
+                ", taken as the halftime swap: rounds 1-" +
+                std::to_string(first_team_round_ - 1) +
+                " are scored with the sides reversed.";
+      }
+      Warn(note);
     }
     if (undecided > 0) {
       Warn(std::to_string(undecided) + " of " + total +
@@ -996,7 +1017,9 @@ class MatchParser {
   std::int32_t round_start_tick_ = 0;
   bool match_started_ = false;
   bool round_open_ = false;
-  int round_deaths_[2] = {0, 0};  // [0] = T losses, [1] = CT losses
+  // Round number at which player_team first fired. In retail demos that is the
+  // halftime swap, which is what makes the first half reconstructable.
+  int first_team_round_ = -1;
   long long resolve_attempts_ = 0;
   long long resolve_failures_ = 0;
 };

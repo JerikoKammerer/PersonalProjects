@@ -225,23 +225,36 @@ suggests, and each is worth knowing before trusting a number:
   *deduced* from the bomb outcome and eliminations, and flagged with
   `winnerInferred` in the JSON.
 * **Sides are only announced at the halftime swap.** `player_team` fires once
-  per player, at the swap, so nobody has a side during the first half. Rounds
-  played is therefore counted for every participant rather than for players
-  with a known side - otherwise the whole first half is skipped and every ADR
-  comes out inflated. First-half rounds that the bomb did not settle are left
-  unattributed and excluded from the score rather than guessed, and the parser
-  says so in `warnings`.
+  per player, at the swap, so nobody has a side during the first half. Two
+  consequences. Rounds played is counted for every participant rather than for
+  players with a known side, or the whole first half is skipped and every ADR
+  comes out inflated fourfold. And round winners cannot be settled while
+  reading: they are resolved in a single pass afterwards, because rosters are
+  fixed for the match even though sides are not. The swap changes which side a
+  roster plays, not who is on it, so once every player has a side the first
+  half can be reconstructed by playing the swap backwards.
 
-The upshot: the scoreboard is trustworthy, the round timeline and kill feed are
-trustworthy, and **the score is partial** - typically the second half plus any
-bomb round. A correct full score needs the team scores out of entity state.
+`Round::winner` therefore names a team the way the scoreboard groups them - by
+the side they *finished* on - not the side they were playing that round. That
+is what a match score means. Round reasons are worded without naming a side
+("Opponents eliminated", "Target bombed") so they stay true in both halves.
+
+Validated end to end: three retail matches resolve every round, two of them
+finishing on exactly 13 - which is what a first-to-13 match does - and all
+three report the swap at round 13, i.e. halftime after round 12, which is MR12.
 
 ## Limitations
 
-* **The score is incomplete**, for the reason above. Deriving the two rosters
-  from the kill graph (players never kill teammates, so the kill pairs are
-  bipartite) would recover first-half sides without touching entity state; that
-  is the obvious next improvement.
+* **Round winners are deduced, not read.** The bomb settles a round outright;
+  otherwise a side that lost everyone lost the round; otherwise the clock ran
+  out and the CTs held. This matches every retail match tested, but it is
+  inference, and `winnerInferred` marks it in the JSON. A round won by a team
+  the demo never showed dying - a full save with the clock running out, say -
+  is the case to distrust.
+* The halftime swap is taken to be the first round in which `player_team`
+  fires. A demo that announces sides at the start instead is handled (no
+  reversal is applied), but a mid-match team change in a demo that never had a
+  proper swap would be misread.
 * `cs2mv inspect <demo>` reports the frames, message kinds, string tables, game
   events *with their key names*, the userinfo table and the raw player
   references seen in events. That is the first thing to run when a demo parses
