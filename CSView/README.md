@@ -130,7 +130,7 @@ on `steam-user` and `globaloffensive`:
 
 ```bash
 cd tools/steam-gc-helper && npm install
-cs2mv serve --gc-helper "node tools/steam-gc-helper/gc-helper.js"
+cs2mv serve --gc-helper tools\steam-gc-helper\gc-helper.cmd   :: gc-helper.sh elsewhere
 ```
 
 Then **sign in from the web UI**: a panel appears under the search box with a
