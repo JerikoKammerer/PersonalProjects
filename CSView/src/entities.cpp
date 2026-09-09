@@ -59,7 +59,15 @@ float BitsToFloat(std::uint32_t raw) {
 
 FieldDecoder::FieldDecoder(const FieldInfo& info) {
   const std::string& type = info.var_type;
-  const std::string& encoder = info.encoder;
+
+  // Two fields lie about themselves. The schema declares them as plain
+  // float32 with no encoder, but the game always writes them as simulation
+  // time, and reading them as raw floats desynchronises the stream on the
+  // very first entity - CWorld carries m_flSimulationTime as its second field.
+  std::string encoder = info.encoder;
+  if (info.var_name == "m_flSimulationTime" || info.var_name == "m_flAnimTime") {
+    encoder = "simtime";
+  }
 
   // Strings first: they are the only variable length values here.
   if (type == "CUtlString" || type == "CUtlSymbolLarge" ||
@@ -83,9 +91,10 @@ FieldDecoder::FieldDecoder(const FieldInfo& info) {
     return;
   }
 
-  // Floats, and everything built out of them. Vectors are decoded component by
-  // component; only the first is kept, but every component's bits are consumed
-  // because skipping any of them would desynchronise the stream.
+  // Floats, and everything built out of them. A vector is several floats back
+  // to back: only the first is kept, but every component must still be read,
+  // because leaving 64 bits of a Vector on the wire desynchronises everything
+  // after it.
   const bool is_float =
       type == "float32" || type == "GameTime_t" ||
       type == "CNetworkedQuantizedFloat" || type == "Vector" ||
@@ -102,6 +111,14 @@ FieldDecoder::FieldDecoder(const FieldInfo& info) {
       kind_ = kFloatNoScale;
     } else {
       kind_ = kFloatQuantized;
+    }
+
+    if (type == "Vector" || type == "QAngle") {
+      components_ = 3;
+    } else if (type == "Vector2D") {
+      components_ = 2;
+    } else if (type == "Vector4D" || type == "Quaternion") {
+      components_ = 4;
     }
 
     bits_ = info.bit_count;
@@ -220,10 +237,14 @@ FieldValue FieldDecoder::Decode(BitReader* bits) const {
       value.kind = FieldValue::kUInt;
       value.u = bits->ReadVarUInt32();
       break;
-    default:
+    default: {
       value.kind = FieldValue::kFloat;
-      value.f = DecodeFloat(bits);
+      // Read every component; keep the first.
+      const float first = DecodeFloat(bits);
+      for (int i = 1; i < components_; ++i) DecodeFloat(bits);
+      value.f = first;
       break;
+    }
   }
   return value;
 }
@@ -247,7 +268,14 @@ void EntityDecoder::Flatten(const SerializerSet& set,
     const FieldInfo& info = set.fields[static_cast<std::size_t>(index)];
     flat.name = prefix.empty() ? info.var_name : prefix + "." + info.var_name;
     flat.decoder = FieldDecoder(info);
-    flat.is_array = StartsWith(info.var_type, "CNetworkUtlVectorBase") ||
+    // Arrays come in two spellings: the vector templates, and a plain fixed
+    // size suffix such as MedalRank_t[6]. char[128] looks like the latter but
+    // is a string, and is decoded as one.
+    const bool fixed_array = !info.var_type.empty() &&
+                             info.var_type.back() == ']' &&
+                             !StartsWith(info.var_type, "char[");
+    flat.is_array = fixed_array ||
+                    StartsWith(info.var_type, "CNetworkUtlVectorBase") ||
                     StartsWith(info.var_type, "CUtlVector");
 
     if (info.has_child()) {
@@ -286,20 +314,25 @@ const EntityDecoder::FlatField* EntityDecoder::Resolve(const FlatClass& flat,
   }
   const FlatField* field = &flat.fields[static_cast<std::size_t>(path.path[0])];
   *name = field->name;
+  // An array spends one path level on the element index before any member
+  // index. A vector of structs therefore uses two levels: which element, then
+  // which member of it.
+  bool subscript_pending = field->is_array;
 
   for (int level = 1; level <= path.last; ++level) {
     const int index = path.path[level];
     if (index < 0) return nullptr;
+
+    if (subscript_pending) {
+      *name = field->name + "." + std::to_string(index);
+      subscript_pending = false;
+      continue;
+    }
     if (!field->children.empty()) {
       if (static_cast<std::size_t>(index) >= field->children.size()) return nullptr;
       field = &field->children[static_cast<std::size_t>(index)];
       *name = field->name;
-      continue;
-    }
-    // An array: every element shares the element decoder, so the path index is
-    // just a subscript.
-    if (field->is_array) {
-      *name = field->name + "." + std::to_string(index);
+      subscript_pending = field->is_array;
       continue;
     }
     return nullptr;
@@ -319,14 +352,33 @@ bool EntityDecoder::ApplyPacket(const std::string& message, std::string* error) 
     pb::Reader r(message);
     std::uint32_t field = 0;
     while (r.NextField(&field)) {
+      // Which field actually carries the payload has changed between builds,
+      // so when tracing, show what the message really contains rather than
+      // assuming.
+      if (trace_ > 0 && r.wire_type() == pb::kLengthDelimited) {
+        const pb::Slice s = r.ReadBytes();
+        std::printf("    field %-3u len=%zu\n", field, s.size);
+        if (field == 7) data = s;
+        if (field == 13 && data.data == nullptr) data = s;
+        continue;
+      }
       switch (field) {
         case 2: updated_entries = r.ReadInt32(); break;
         case 3: is_delta = r.ReadBool(); break;
-        case 7:
+        // entity_data is the payload in current builds; serialized_entities
+        // exists alongside it but is a much smaller, different thing. Taking
+        // the wrong one decodes noise, so the preference is explicit.
+        case 7: data = r.ReadBytes(); break;
+        case 13:
           if (data.data == nullptr) data = r.ReadBytes();
           break;
-        case 13: data = r.ReadBytes(); break;
-        default: break;
+        default:
+          if (trace_ > 0) {
+            const std::uint64_t v = r.ReadVarint();
+            std::printf("    field %-3u = %llu\n", field,
+                        static_cast<unsigned long long>(v));
+          }
+          break;
       }
     }
   }

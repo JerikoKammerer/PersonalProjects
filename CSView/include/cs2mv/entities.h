@@ -78,6 +78,9 @@ class FieldDecoder {
   float DecodeFloat(BitReader* bits) const;
 
   Kind kind_ = kVarUInt;
+  // How many floats sit back to back in this field. A Vector is three, a
+  // Quaternion four; anything else is one.
+  int components_ = 1;
   // Quantisation, precomputed. A bit count of 0 or 32 means no scaling at all.
   int bits_ = 0;
   int flags_ = 0;

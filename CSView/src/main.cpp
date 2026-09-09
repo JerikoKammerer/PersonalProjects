@@ -422,6 +422,7 @@ int CommandSchema(const std::vector<std::string>& args) {
     if (f.low != 0.0f || f.high != 0.0f) {
       std::cout << " range=[" << f.low << "," << f.high << "]";
     }
+    if (f.encode_flags != 0) std::cout << " flags=" << f.encode_flags;
     if (f.has_child()) std::cout << " -> " << f.field_serializer_name;
     std::cout << "\n";
   }
