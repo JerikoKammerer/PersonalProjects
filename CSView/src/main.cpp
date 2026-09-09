@@ -25,6 +25,8 @@
 #include "cs2mv/match.h"
 #include "cs2mv/parser.h"
 #include "cs2mv/json.h"
+#include "cs2mv/entities.h"
+#include "cs2mv/protobuf.h"
 #include "cs2mv/serializers.h"
 #include "cs2mv/sharecode.h"
 #include "cs2mv/steam_login.h"
@@ -426,6 +428,120 @@ int CommandSchema(const std::vector<std::string>& args) {
   return 0;
 }
 
+// Decodes entity state and reports whether it actually worked. Entity decoding
+// has no partial credit - it either stays in sync or produces noise - so the
+// useful output is the desync count and a handful of real coordinates.
+int CommandEntities(const std::vector<std::string>& args) {
+  if (args.empty()) {
+    std::cerr << "usage: cs2mv entities <demo file> [max packets]\n";
+    return 2;
+  }
+  const long long limit = args.size() > 1 ? std::atoll(args[1].c_str()) : 400;
+
+  DemoReader reader;
+  std::string error;
+  if (!reader.Open(args[0], &error)) {
+    std::cerr << "error: " << error << "\n";
+    return 1;
+  }
+
+  SerializerSet serializers;
+  ClassTable classes;
+  EntityDecoder decoder;
+  if (std::getenv("CS2MV_TRACE") != nullptr) decoder.set_trace(1);
+  if (std::getenv("CS2MV_NO_SPAWNGROUP") != nullptr) decoder.set_read_spawn_group(false);
+  bool ready = false;
+  long long packets = 0;
+  std::string first_failure;
+
+  DemoFrame frame;
+  while (reader.Next(&frame)) {
+    if (frame.kind == kDemSendTables) {
+      if (!ParseSendTables(frame.body, &serializers, &error)) {
+        std::cerr << "error: " << error << "\n";
+        return 1;
+      }
+      continue;
+    }
+    if (frame.kind == kDemClassInfo) {
+      if (!ParseClassInfo(frame.body, &classes, &error)) {
+        std::cerr << "error: " << error << "\n";
+        return 1;
+      }
+      continue;
+    }
+    if (!ready && !serializers.serializers.empty() && !classes.names.empty()) {
+      if (!decoder.Init(serializers, classes, &error)) {
+        std::cerr << "error: " << error << "\n";
+        return 1;
+      }
+      ready = true;
+    }
+    if (!ready) continue;
+    if (frame.kind != kDemPacket && frame.kind != kDemSignonPacket) continue;
+
+    // Walk the packet for svc_PacketEntities (55).
+    pb::Reader r(frame.body);
+    pb::Slice payload;
+    std::uint32_t field = 0;
+    while (r.NextField(&field)) {
+      if (field == 3 && r.wire_type() == pb::kLengthDelimited) payload = r.ReadBytes();
+    }
+    if (payload.data == nullptr) continue;
+
+    BitReader bits(payload.data, payload.size);
+    std::string buf;
+    while (bits.BitsLeft() > 8) {
+      const std::uint32_t kind = bits.ReadUBitVar();
+      const std::uint32_t size = bits.ReadVarUInt32();
+      if (!bits.ok() || size > (1u << 24)) break;
+      buf.resize(size);
+      if (size > 0 && !bits.ReadBytes(&buf[0], size)) break;
+      if (kind != 55) continue;
+
+      std::string packet_error;
+      if (!decoder.ApplyPacket(buf, &packet_error) && first_failure.empty()) {
+        first_failure = packet_error;
+      }
+      ++packets;
+    }
+    if (limit > 0 && packets >= limit) break;
+  }
+
+  std::cout << "packets decoded : " << packets << "\n"
+            << "field updates   : " << decoder.updates_applied() << "\n"
+            << "desyncs         : " << decoder.packets_failed() << "\n"
+            << "entities alive  : " << decoder.entities().size() << "\n";
+  if (!first_failure.empty()) {
+    std::cout << "first failure   : " << first_failure << "\n";
+  }
+
+  // Player positions are the point of all this: cell plus offset, where a cell
+  // is 512 units and the world is centred on 16384.
+  std::cout << "\nplayer pawns:\n";
+  int shown = 0;
+  for (const auto& entry : decoder.entities()) {
+    const Entity& entity = entry.second;
+    if (entity.class_name != "CCSPlayerPawn") continue;
+    const FieldValue* cell_x = entity.Get("CBodyComponent.m_cellX");
+    const FieldValue* cell_y = entity.Get("CBodyComponent.m_cellY");
+    const FieldValue* vec_x = entity.Get("CBodyComponent.m_vecX");
+    const FieldValue* vec_y = entity.Get("CBodyComponent.m_vecY");
+    if (cell_x == nullptr || vec_x == nullptr) continue;
+
+    const float x = static_cast<float>(cell_x->AsInt()) * 512.0f - 16384.0f + vec_x->AsFloat();
+    const float y = cell_y != nullptr && vec_y != nullptr
+                        ? static_cast<float>(cell_y->AsInt()) * 512.0f - 16384.0f + vec_y->AsFloat()
+                        : 0.0f;
+    const FieldValue* health = entity.Get("m_iHealth");
+    std::printf("  entity %-5d  x=%9.1f  y=%9.1f  health=%lld\n", entity.index, x, y,
+                health != nullptr ? health->AsInt() : -1);
+    if (++shown >= 12) break;
+  }
+  if (shown == 0) std::cout << "  (none decoded)\n";
+  return first_failure.empty() ? 0 : 1;
+}
+
 int CommandFetch(const std::vector<std::string>& args, const Options& options) {
   if (args.size() < 2) {
     std::cerr << "usage: cs2mv fetch <http URL> <destination.dem>\n";
@@ -752,6 +868,7 @@ int main(int argc, char** argv) {
   if (command == "parse") return CommandParse(args, options);
   if (command == "inspect") return CommandInspect(args);
   if (command == "schema") return CommandSchema(args);
+  if (command == "entities") return CommandEntities(args);
   if (command == "fetch") return CommandFetch(args, options);
   if (command == "gc-request") return CommandGcRequest(args);
   if (command == "help" || command == "--help" || command == "-h") {

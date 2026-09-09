@@ -28,6 +28,7 @@ add_library(cs2mv STATIC
   src/match.cpp
   src/parser.cpp
   src/protobuf.cpp
+  src/entities.cpp
   src/fieldpath.cpp
   src/serializers.cpp
   src/sharecode.cpp
