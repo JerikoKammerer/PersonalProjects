@@ -1,0 +1,35 @@
+{
+  "name": "cs2mv-steam-gc-helper",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Turns a CS2 share code into a demo URL by asking the game coordinator. Owns its own Steam credentials so that cs2mv never has to.",
+  "main": "gc-helper.js",
+  "scripts": {
+    "login": "node gc-helper.js login"
+  },
+  "dependencies": {
+    "globaloffensive": "^3.1.2",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0",
+    "steam-session": "^1.9.2",
+    "steam-user": "^5.2.0"
+  },
+  "//overrides": [
+    "steam-user pulls two dependencies with published advisories: adm-zip",
+    "<0.6.0 (zip decompression bomb) and, via steam-appticket, protobufjs 6.x",
+    "(prototype pollution and code execution through crafted descriptors).",
+    "`npm audit fix --force` resolves them by DOWNGRADING steam-user to 3.15,",
+    "which predates the refresh-token login this helper relies on - that is a",
+    "worse position, not a better one. Pinning the transitive versions forward",
+    "keeps steam-user 5.x and drops the advisories. Both are API compatible for",
+    "the way steam-user uses them; the tests below cover the paths this helper",
+    "actually exercises."
+  ],
+  "overrides": {
+    "adm-zip": "^0.6.0",
+    "protobufjs": "^7.6.6"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}

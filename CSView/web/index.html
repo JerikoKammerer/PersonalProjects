@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CS2 Match Viewer</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>CS2 Match Viewer</h1>
+  <form id="lookup" autocomplete="off">
+    <input id="code" name="code" spellcheck="false"
+           placeholder="Paste a share code, a steam:// match link, or a path to a .dem file">
+    <button type="submit">Open</button>
+  </form>
+  <p id="status" class="status"></p>
+
+  <div id="steam" class="steam" hidden>
+    <div class="steam-line">
+      <span id="steam-state" class="steam-state"></span>
+      <button type="button" id="steam-signin" hidden>Sign in with Steam</button>
+      <button type="button" id="steam-signout" class="ghost" hidden>Sign out</button>
+    </div>
+    <div id="steam-qr" class="steam-qr" hidden>
+      <img id="steam-qr-img" alt="Steam sign-in QR code" width="200" height="200">
+      <div class="steam-qr-help">
+        <p><strong>Scan with the Steam mobile app</strong> — Steam Guard, then
+          the scan button.</p>
+        <p id="steam-qr-progress" class="muted">Waiting for a phone…</p>
+        <p class="muted">
+          No password is typed here and none is stored. Your phone talks to
+          Steam directly; this page only shows the challenge, and the helper
+          keeps a revocable token.
+        </p>
+        <p><a id="steam-qr-link" href="#" target="_blank" rel="noreferrer">Open
+          the challenge link instead</a></p>
+      </div>
+    </div>
+  </div>
+</header>
+
+<section id="recent" class="recent" hidden>
+  <h3>Your matches <span class="hint">demos CS2 has downloaded on this machine</span></h3>
+  <div id="recent-list" class="recent-list"></div>
+  <div class="recent-more">
+    <button type="button" id="recent-fetch" class="ghost">Load match history from Steam</button>
+    <span id="recent-fetch-note" class="recent-empty"></span>
+  </div>
+  <div id="remote-list" class="recent-list"></div>
+</section>
+
+<main id="match" hidden>
+  <section class="summary">
+    <div class="map">
+      <h2 id="map-name">—</h2>
+      <p id="match-meta" class="meta"></p>
+    </div>
+    <div class="score">
+      <span class="ct" id="score-ct">0</span>
+      <span class="sep">:</span>
+      <span class="t" id="score-t">0</span>
+    </div>
+    <div class="watch">
+      <button type="button" id="watch-match">Watch in CS2</button>
+      <p id="watch-note" class="watch-note"></p>
+    </div>
+    <dl class="ids">
+      <dt>Match id</dt><dd id="match-id">—</dd>
+      <dt>Outcome id</dt><dd id="outcome-id">—</dd>
+      <dt>Demo</dt><dd id="demo-source">—</dd>
+    </dl>
+  </section>
+
+  <section class="board">
+    <h3>Scoreboard</h3>
+    <table id="scoreboard">
+      <thead>
+        <tr>
+          <th class="name">Player</th>
+          <th data-sort="kills">K</th>
+          <th data-sort="deaths">D</th>
+          <th data-sort="assists">A</th>
+          <th data-sort="kd">K/D</th>
+          <th data-sort="adr">ADR</th>
+          <th data-sort="hsPercent">HS%</th>
+          <th data-sort="mvps">MVP</th>
+          <th data-sort="entryKills">Entry</th>
+          <th data-sort="enemiesFlashed">Flashed</th>
+          <th data-sort="utilityDamage">Util dmg</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="timeline">
+    <h3>Rounds <span class="hint">click a round for its kill feed</span></h3>
+    <div id="rounds" class="rounds"></div>
+    <div id="round-detail" class="round-detail" hidden></div>
+  </section>
+
+  <section id="warnings-box" class="warnings" hidden>
+    <h3>Parser notes</h3>
+    <ul id="warnings"></ul>
+  </section>
+</main>
+
+<footer>
+  <p>
+    Paste a share code and the viewer finds the demo itself: it searches every
+    CS2 replay folder on this machine, across all Steam libraries, and matches
+    on the id in the filename. So if the match is one you have downloaded in
+    CS2 under <em>Watch → Your Matches</em>, it just opens.
+  </p>
+  <p>
+    If it is not downloaded yet there is nothing the viewer can do on its own.
+    A share code holds only a match id, an outcome id and a token — no link —
+    and only the CS2 game coordinator can turn one into a URL, which needs a
+    logged-in Steam session. Click Download in CS2 and paste the code again, or
+    register a file or URL yourself with <code>cs2mv add</code>.
+  </p>
+</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>
