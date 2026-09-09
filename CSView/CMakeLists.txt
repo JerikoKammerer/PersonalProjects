@@ -28,6 +28,7 @@ add_library(cs2mv STATIC
   src/match.cpp
   src/parser.cpp
   src/protobuf.cpp
+  src/fieldpath.cpp
   src/serializers.cpp
   src/sharecode.cpp
   src/steam_login.cpp
@@ -51,6 +52,7 @@ add_executable(cs2mv_tests
   tests/test_main.cpp
   tests/test_codecs.cpp
   tests/test_demo.cpp
+  tests/test_fieldpath.cpp
   tests/test_http.cpp
   tests/test_protobuf.cpp
   tests/test_sharecode.cpp

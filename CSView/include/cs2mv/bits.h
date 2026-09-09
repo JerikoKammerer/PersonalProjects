@@ -82,6 +82,22 @@ class BitReader {
     return 0;
   }
 
+  // Zigzag signed varint: the low bit carries the sign.
+  std::int32_t ReadVarInt32() {
+    const std::uint32_t v = ReadVarUInt32();
+    return static_cast<std::int32_t>((v >> 1) ^ (~(v & 1) + 1));
+  }
+
+  // "ubitvarfp", the small-integer encoding field paths use. A cascade of
+  // selector bits picks the width: 2, then 4, then 10, then 17, else 31.
+  std::uint32_t ReadUBitVarFieldPath() {
+    if (ReadBit()) return ReadBits(2);
+    if (ReadBit()) return ReadBits(4);
+    if (ReadBit()) return ReadBits(10);
+    if (ReadBit()) return ReadBits(17);
+    return ReadBits(31);
+  }
+
   // Reads `count` whole bytes. Fast path when the reader is byte aligned.
   bool ReadBytes(void* dst, std::size_t count) {
     auto* out = static_cast<std::uint8_t*>(dst);
