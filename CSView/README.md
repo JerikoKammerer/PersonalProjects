@@ -224,6 +224,42 @@ Toolchain, if you need one:
 winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 ```
 
+## Watching the match
+
+**A demo contains no video.** It is a tick-by-tick record of network state -
+who was where, what fired, what changed - and not a single frame of picture.
+Nothing can play one as a video file, because there is no video in it. Watching
+a demo means something has to *render* that state, and there are only two ways
+to do that.
+
+**CS2 renders it.** This is what the *Watch in CS2* button does: it hands the
+demo to the game through `steam://run/730//+playdemo replays/<file>`. Full 3D,
+official playback, free camera, and nothing to build. `playdemo` resolves paths
+against the game's own `csgo` directory, which is why the reference is
+`replays/<file>` and not an absolute path full of spaces needing quotes. A demo
+that lives elsewhere - one the game coordinator fetched into the cache, say -
+is copied into the replay folder first, and the UI says so before starting a
+200 MB copy.
+
+Seeking to a round is a **console command rather than a launch argument**:
+`playdemo` loads asynchronously, so a tick passed at startup is applied before
+the demo is ready. Each round in the timeline offers its `demo_gototick <tick>`
+to copy and paste into the CS2 console.
+
+**The browser renders it**, which would mean a 2D top-down replay of the kind
+csstats.gg and Leetify show. That needs player positions every tick, and
+positions live in entity state - the flattened-serializer decoding this parser
+deliberately skips. Not a small addition: field-path decoding through a Huffman
+tree, per-field decoders driven by serializer metadata, class baselines, and
+cell-plus-offset coordinate reconstruction. It is the largest single piece of a
+Source 2 parser, several times the size of everything here, and it is the part
+that breaks on game updates. It is not implemented, and pretending otherwise
+with something half-working would be worse than not having it.
+
+The `/api/watch` endpoint is the one route that starts a program, so unlike the
+read-only routes it refuses a cross-origin caller - a page on the open web can
+POST to loopback, and should not get to launch things here.
+
 ## How the demo parsing works
 
 CS2 demos describe a match twice over: as a stream of *game events* (the same

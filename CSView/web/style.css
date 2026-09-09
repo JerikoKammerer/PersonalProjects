@@ -168,3 +168,12 @@ button.ghost:hover { color: var(--text); filter: none; }
 .recent-more { margin-top: .75rem; display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; }
 .recent-item.expired { opacity: .5; cursor: default; }
 .recent-item.expired:hover { border-color: transparent; }
+
+/* Handing a demo to CS2 for playback. */
+.watch { display: flex; flex-direction: column; gap: .4rem; align-items: flex-start; }
+.watch-note { margin: 0; font-size: 12px; color: var(--muted); max-width: 34ch; }
+.round-watch { margin-top: .75rem; display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+.tick-cmd { font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+            background: var(--panel-2); padding: .3rem .5rem; border-radius: 4px;
+            color: var(--text); border: 1px solid var(--line); cursor: pointer; }
+.tick-cmd:hover { border-color: var(--ct); }

@@ -27,6 +27,7 @@
 #include "cs2mv/json.h"
 #include "cs2mv/sharecode.h"
 #include "cs2mv/steam_login.h"
+#include "cs2mv/watch.h"
 
 namespace {
 
@@ -577,6 +578,42 @@ int CommandServe(const Options& options) {
       w.EndObject();
     }
     w.EndArray();
+    w.EndObject();
+    response->SetJson(w.str());
+  });
+
+  // Hands a demo to CS2 for playback. This starts a program, so unlike the
+  // read-only routes it refuses a cross-origin caller: a page on the open web
+  // can POST to loopback, and should not get to launch things here.
+  server.Route("/api/watch", [](const HttpRequest& request,
+                                HttpResponse* response) {
+    auto origin = request.headers.find("origin");
+    if (origin != request.headers.end() &&
+        origin->second.rfind("http://127.0.0.1:", 0) != 0 &&
+        origin->second.rfind("http://localhost:", 0) != 0) {
+      response->SetError(403, "cross-origin requests cannot start playback");
+      return;
+    }
+
+    const std::string demo = request.Param("demo");
+    if (demo.empty()) {
+      response->SetError(400, "pass ?demo=<path to a .dem>");
+      return;
+    }
+    const bool dry_run = !request.Param("dry").empty();
+
+    std::string command;
+    std::string error;
+    bool requires_copy = false;
+    if (!LaunchCs2Playback(demo, dry_run, &command, &requires_copy, &error)) {
+      response->SetError(400, error);
+      return;
+    }
+    JsonWriter w;
+    w.BeginObject();
+    w.Field("launched", !dry_run);
+    w.Field("command", command);
+    w.Field("requiresCopy", requires_copy);
     w.EndObject();
     response->SetJson(w.str());
   });

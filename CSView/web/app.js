@@ -228,6 +228,7 @@ function renderRoundDetail() {
     list.appendChild(li);
   }
   box.appendChild(list);
+  box.appendChild(roundSeekCommand(round));
 }
 
 function formatClock(seconds) {
@@ -495,3 +496,64 @@ async function loadRemote() {
 }
 
 $('recent-fetch').addEventListener('click', loadRemote);
+
+// --- Playback in CS2 -----------------------------------------------------
+//
+// A demo holds no video, only per-tick state, so watching it means letting the
+// game render it. This hands the file to CS2 and offers the console command
+// that seeks to a given round.
+
+async function watchInCs2() {
+  const path = current && current.match ? current.match.demoSource : '';
+  if (!path) return;
+  const note = $('watch-note');
+  const button = $('watch-match');
+  button.disabled = true;
+  note.textContent = 'Handing the demo to CS2…';
+  try {
+    const response = await fetch('/api/watch?demo=' + encodeURIComponent(path),
+                                 { method: 'POST' });
+    const body = await response.json();
+    note.textContent = response.ok
+      ? 'CS2 is opening the demo. Use the round buttons below for the tick to seek to.'
+      : (body.error || 'could not start playback');
+  } catch (err) {
+    note.textContent = String(err);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+$('watch-match').addEventListener('click', watchInCs2);
+
+// Seeking is a console command rather than a launch argument: playdemo loads
+// asynchronously, so a tick passed at startup is applied before the demo is
+// ready. Clicking copies it.
+function roundSeekCommand(round) {
+  const wrap = document.createElement('div');
+  wrap.className = 'round-watch';
+
+  const label = document.createElement('span');
+  label.className = 'muted';
+  label.textContent = 'Jump to this round in CS2:';
+
+  const cmd = document.createElement('button');
+  cmd.type = 'button';
+  cmd.className = 'tick-cmd';
+  const text = `demo_gototick ${round.startTick}`;
+  cmd.textContent = text;
+  cmd.title = 'Copy, then paste into the CS2 console (~)';
+  cmd.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      cmd.textContent = 'copied — paste into the CS2 console';
+      setTimeout(() => { cmd.textContent = text; }, 1600);
+    } catch (err) {
+      cmd.textContent = text;
+    }
+  });
+
+  wrap.appendChild(label);
+  wrap.appendChild(cmd);
+  return wrap;
+}
