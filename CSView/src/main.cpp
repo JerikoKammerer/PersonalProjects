@@ -25,6 +25,7 @@
 #include "cs2mv/match.h"
 #include "cs2mv/parser.h"
 #include "cs2mv/json.h"
+#include "cs2mv/serializers.h"
 #include "cs2mv/sharecode.h"
 #include "cs2mv/steam_login.h"
 #include "cs2mv/watch.h"
@@ -356,6 +357,75 @@ int CommandInspect(const std::vector<std::string>& args) {
   return 0;
 }
 
+// Dumps the entity schema a demo ships with. This is the ground truth the 2D
+// replay is built on, so being able to look at it directly matters.
+int CommandSchema(const std::vector<std::string>& args) {
+  if (args.empty()) {
+    std::cerr << "usage: cs2mv schema <demo file> [serializer name]\n";
+    return 2;
+  }
+  DemoReader reader;
+  std::string error;
+  if (!reader.Open(args[0], &error)) {
+    std::cerr << "error: " << error << "\n";
+    return 1;
+  }
+
+  SerializerSet serializers;
+  ClassTable classes;
+  bool have_tables = false, have_classes = false;
+  DemoFrame frame;
+  while (reader.Next(&frame)) {
+    if (frame.kind == kDemSendTables && !have_tables) {
+      if (!ParseSendTables(frame.body, &serializers, &error)) {
+        std::cerr << "error: " << error << "\n";
+        return 1;
+      }
+      have_tables = true;
+    } else if (frame.kind == kDemClassInfo && !have_classes) {
+      if (!ParseClassInfo(frame.body, &classes, &error)) {
+        std::cerr << "error: " << error << "\n";
+        return 1;
+      }
+      have_classes = true;
+    }
+    if (have_tables && have_classes) break;
+  }
+  if (!have_tables || !have_classes) {
+    std::cerr << "error: demo carried no send tables or class info\n";
+    return 1;
+  }
+
+  std::cout << "symbols     : " << serializers.symbols.size() << "\n"
+            << "fields      : " << serializers.fields.size() << "\n"
+            << "serializers : " << serializers.serializers.size() << "\n"
+            << "classes     : " << classes.names.size()
+            << " (max id " << classes.max_class_id << ", "
+            << classes.class_id_bits() << " bits)\n";
+
+  const std::string want = args.size() > 1 ? args[1] : "CCSPlayerPawn";
+  const Serializer* s = serializers.Find(want);
+  if (s == nullptr) {
+    std::cout << "\nno serializer named " << want << "\n";
+    return 0;
+  }
+  std::cout << "\n" << s->name << " v" << s->version << ", " << s->fields.size()
+            << " fields:\n";
+  for (int index : s->fields) {
+    if (index < 0 || static_cast<std::size_t>(index) >= serializers.fields.size()) continue;
+    const FieldInfo& f = serializers.fields[static_cast<std::size_t>(index)];
+    std::cout << "  " << f.var_name << "  <" << f.var_type << ">";
+    if (f.bit_count > 0) std::cout << " bits=" << f.bit_count;
+    if (!f.encoder.empty()) std::cout << " enc=" << f.encoder;
+    if (f.low != 0.0f || f.high != 0.0f) {
+      std::cout << " range=[" << f.low << "," << f.high << "]";
+    }
+    if (f.has_child()) std::cout << " -> " << f.field_serializer_name;
+    std::cout << "\n";
+  }
+  return 0;
+}
+
 int CommandFetch(const std::vector<std::string>& args, const Options& options) {
   if (args.size() < 2) {
     std::cerr << "usage: cs2mv fetch <http URL> <destination.dem>\n";
@@ -681,6 +751,7 @@ int main(int argc, char** argv) {
   if (command == "list") return CommandList(options);
   if (command == "parse") return CommandParse(args, options);
   if (command == "inspect") return CommandInspect(args);
+  if (command == "schema") return CommandSchema(args);
   if (command == "fetch") return CommandFetch(args, options);
   if (command == "gc-request") return CommandGcRequest(args);
   if (command == "help" || command == "--help" || command == "-h") {

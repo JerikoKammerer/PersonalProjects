@@ -28,6 +28,7 @@ add_library(cs2mv STATIC
   src/match.cpp
   src/parser.cpp
   src/protobuf.cpp
+  src/serializers.cpp
   src/sharecode.cpp
   src/steam_login.cpp
   src/watch.cpp
