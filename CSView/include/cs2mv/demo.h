@@ -91,6 +91,9 @@ class DemoReader {
   // file, or on error - check error() to tell the difference.
   bool Next(DemoFrame* frame);
 
+  // Back to the first frame, for a second pass over the same file.
+  void Rewind();
+
   const std::string& error() const { return error_; }
   bool failed() const { return !error_.empty(); }
 

@@ -14,6 +14,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -27,6 +28,7 @@
 #include "cs2mv/json.h"
 #include "cs2mv/entities.h"
 #include "cs2mv/protobuf.h"
+#include "cs2mv/replay.h"
 #include "cs2mv/serializers.h"
 #include "cs2mv/sharecode.h"
 #include "cs2mv/steam_login.h"
@@ -63,6 +65,9 @@ void PrintUsage() {
       "        Show the demo index.\n"
       "  cs2mv parse <demo file | share code> [--pretty]\n"
       "        Parse a demo and print the match as JSON.\n"
+      "  cs2mv replay <demo file | share code> [frames.json] [map.png]\n"
+      "        Build the 2D replay: player positions, grenades, the bomb, and a\n"
+      "        map image learnt from where players walked.\n"
       "  cs2mv inspect <demo file>\n"
       "        Report which frames, messages and game events a demo contains.\n"
       "  cs2mv fetch <http URL> <destination.dem>\n"
@@ -159,40 +164,105 @@ bool LooksLikeShareCode(const std::string& s, std::string* code) {
   return ExtractShareCode(s, code);
 }
 
+// Turns a target - a demo file path or a share code - into the path of a
+// demo on disk, fetching it if it has to. When the target is a code, the
+// match's id fields are filled in from it.
+bool ResolveTarget(const std::string& target, const Options& options, Match* match,
+                   std::string* demo_path, std::string* error) {
+  *demo_path = target;
+  std::string code_text;
+  if (!LooksLikeShareCode(target, &code_text)) return true;
+
+  ShareCode code;
+  if (!DecodeShareCode(code_text, &code, error)) return false;
+  ResolveOptions resolve = MakeResolveOptions(options);
+  resolve.progress = [](std::uint64_t done, std::uint64_t total) {
+    if (total > 0) {
+      std::fprintf(stderr, "\rdownloading %llu/%llu MB",
+                   static_cast<unsigned long long>(done >> 20),
+                   static_cast<unsigned long long>(total >> 20));
+    } else {
+      std::fprintf(stderr, "\rdownloading %llu MB",
+                   static_cast<unsigned long long>(done >> 20));
+    }
+  };
+  if (!ResolveDemo(code, code_text, resolve, demo_path, error)) return false;
+  std::fprintf(stderr, "\r");
+
+  match->share_code = code_text;
+  match->match_id = code.match_id;
+  match->outcome_id = code.outcome_id;
+  match->token = code.token;
+  return true;
+}
+
 // Loads a match from either a demo file path or a share code.
 bool LoadMatch(const std::string& target, const Options& options, Match* match,
                std::string* error) {
-  std::string demo_path = target;
-  std::string code_text;
-
-  if (LooksLikeShareCode(target, &code_text)) {
-    ShareCode code;
-    if (!DecodeShareCode(code_text, &code, error)) return false;
-    ResolveOptions resolve = MakeResolveOptions(options);
-    resolve.progress = [](std::uint64_t done, std::uint64_t total) {
-      if (total > 0) {
-        std::fprintf(stderr, "\rdownloading %llu/%llu MB",
-                     static_cast<unsigned long long>(done >> 20),
-                     static_cast<unsigned long long>(total >> 20));
-      } else {
-        std::fprintf(stderr, "\rdownloading %llu MB",
-                     static_cast<unsigned long long>(done >> 20));
-      }
-    };
-    if (!ResolveDemo(code, code_text, resolve, &demo_path, error)) return false;
-    std::fprintf(stderr, "\r");
-
-    match->share_code = code_text;
-    match->match_id = code.match_id;
-    match->outcome_id = code.outcome_id;
-    match->token = code.token;
-  }
-
+  std::string demo_path;
+  if (!ResolveTarget(target, options, match, &demo_path, error)) return false;
   DemoReader reader;
   if (!reader.Open(demo_path, error)) return false;
   match->demo_source = demo_path;
   return ParseDemo(&reader, ParseOptions(), match, error);
 }
+
+// A parsed demo, kept so that the replay - which is asked for one round at a
+// time - is built once rather than once per round. The match is parsed
+// eagerly and the replay on first request, since the scoreboard should not
+// wait on the second pass.
+struct LoadedDemo {
+  std::string path;
+  std::shared_ptr<Match> match;
+  std::shared_ptr<Replay> replay;
+};
+
+class DemoCache {
+ public:
+  explicit DemoCache(const Options& options) : options_(options) {}
+
+  // Parsing is serialised: a demo costs hundreds of megabytes, so a
+  // browser's parallel requests must not multiply that.
+  bool Get(const std::string& target, bool want_replay, std::shared_ptr<Match>* match,
+           std::shared_ptr<Replay>* replay, std::string* error) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    Match ids;
+    std::string path;
+    if (!ResolveTarget(target, options_, &ids, &path, error)) return false;
+
+    LoadedDemo* entry = nullptr;
+    for (LoadedDemo& e : entries_) {
+      if (e.path == path) entry = &e;
+    }
+    if (entry == nullptr) {
+      auto parsed = std::make_shared<Match>(ids);
+      DemoReader reader;
+      if (!reader.Open(path, error)) return false;
+      parsed->demo_source = path;
+      if (!ParseDemo(&reader, ParseOptions(), parsed.get(), error)) return false;
+      if (entries_.size() >= 2) entries_.erase(entries_.begin());
+      entries_.push_back(LoadedDemo{path, parsed, nullptr});
+      entry = &entries_.back();
+    }
+    if (want_replay && entry->replay == nullptr) {
+      auto built = std::make_shared<Replay>();
+      DemoReader reader;
+      if (!reader.Open(path, error)) return false;
+      if (!BuildReplay(&reader, ReplayOptions(), built.get(), error)) return false;
+      built->tick_rate = static_cast<int>(std::lround(1.0 / entry->match->tick_interval));
+      entry->replay = built;
+    }
+    *match = entry->match;
+    if (replay != nullptr) *replay = entry->replay;
+    return true;
+  }
+
+ private:
+  const Options& options_;
+  std::mutex mutex_;
+  std::vector<LoadedDemo> entries_;
+};
 
 int CommandDecode(const std::vector<std::string>& args) {
   if (args.empty()) {
@@ -289,6 +359,59 @@ int CommandParse(const std::vector<std::string>& args, const Options& options) {
     return 1;
   }
   std::cout << MatchToJson(match, options.pretty) << "\n";
+  return 0;
+}
+
+int CommandReplay(const std::vector<std::string>& args, const Options& options) {
+  if (args.empty()) {
+    std::cerr << "usage: cs2mv replay <demo file | share code> [frames.json] [map.png]\n";
+    return 2;
+  }
+  Match match;
+  std::string demo_path;
+  std::string error;
+  if (!ResolveTarget(args[0], options, &match, &demo_path, &error)) {
+    std::cerr << "error: " << error << "\n";
+    return 1;
+  }
+  DemoReader reader;
+  if (!reader.Open(demo_path, &error)) {
+    std::cerr << "error: " << error << "\n";
+    return 1;
+  }
+  Replay replay;
+  if (!BuildReplay(&reader, ReplayOptions(), &replay, &error)) {
+    std::cerr << "error: " << error << "\n";
+    return 1;
+  }
+
+  std::cout << "map      : " << replay.map << "\n"
+            << "bounds   : [" << replay.bounds_min[0] << ", " << replay.bounds_min[1] << "] to ["
+            << replay.bounds_max[0] << ", " << replay.bounds_max[1] << "]\n"
+            << "frames   : " << replay.frames.size() << " (every " << replay.tick_step
+            << " ticks)\n"
+            << "players  : " << replay.players.size() << "\n"
+            << "weapons  : " << replay.weapons.size() << "\n"
+            << "grid     : " << replay.grid_w << "x" << replay.grid_h << " cells of "
+            << replay.grid_cell << " units\n";
+  for (const Bombsite& s : replay.sites) {
+    std::cout << "site " << (s.letter.empty() ? "?" : s.letter) << "   : [" << s.min[0] << ", "
+              << s.min[1] << "] to [" << s.max[0] << ", " << s.max[1] << "]\n";
+  }
+  for (const ReplayPlayer& p : replay.players) {
+    std::cout << "  player " << p.id << "  " << p.name << "  " << p.steam_id << "\n";
+  }
+
+  if (args.size() > 1) {
+    std::ofstream out(args[1], std::ios::binary);
+    out << ReplayToJson(replay, 0, 0);
+    std::cout << "wrote " << args[1] << "\n";
+  }
+  if (args.size() > 2) {
+    std::ofstream out(args[2], std::ios::binary);
+    out << ReplayMapPng(replay);
+    std::cout << "wrote " << args[2] << "\n";
+  }
   return 0;
 }
 
@@ -439,99 +562,6 @@ int CommandSchema(const std::vector<std::string>& args) {
   return 0;
 }
 
-// The instancebaseline string table, as a DEM_StringTables or DEM_FullPacket
-// frame carries it: CDemoStringTables { tables = 1 { table_name = 1,
-// items = 2 { str = 1, data = 2 } } }. Each item is one class's default
-// state, keyed by its class id.
-void LoadBaselines(const DemoFrame& frame, EntityDecoder* decoder) {
-  pb::Slice tables{reinterpret_cast<const std::uint8_t*>(frame.body.data()),
-                   frame.body.size()};
-  if (frame.kind == kDemFullPacket) {
-    // CDemoFullPacket { string_table = 1, packet = 2 }
-    tables = pb::Slice{};
-    pb::Reader r(frame.body);
-    std::uint32_t field = 0;
-    while (r.NextField(&field)) {
-      if (field == 1 && r.wire_type() == pb::kLengthDelimited) tables = r.ReadBytes();
-    }
-    if (tables.data == nullptr) return;
-  }
-
-  pb::Reader r(tables);
-  std::uint32_t field = 0;
-  while (r.NextField(&field)) {
-    if (field != 1 || r.wire_type() != pb::kLengthDelimited) continue;
-    pb::Reader table(r.ReadBytes());
-    std::string name;
-    std::vector<pb::Slice> items;
-    std::uint32_t f = 0;
-    while (table.NextField(&f)) {
-      if (f == 1) {
-        name = table.ReadString();
-      } else if (f == 2 && table.wire_type() == pb::kLengthDelimited) {
-        items.push_back(table.ReadBytes());
-      }
-    }
-    if (name != "instancebaseline") continue;
-    for (const pb::Slice& item : items) {
-      pb::Reader entry(item);
-      std::string key;
-      pb::Slice data;
-      std::uint32_t g = 0;
-      while (entry.NextField(&g)) {
-        if (g == 1) {
-          key = entry.ReadString();
-        } else if (g == 2 && entry.wire_type() == pb::kLengthDelimited) {
-          data = entry.ReadBytes();
-        }
-      }
-      // Alternate baselines are keyed "class:index"; only the plain ones are
-      // the class defaults.
-      if (key.empty() || key.find(':') != std::string::npos || data.data == nullptr) continue;
-      decoder->SetBaseline(std::atoi(key.c_str()), data.ToString());
-    }
-  }
-}
-
-// Reads a demo up to the point where entity decoding can start: the schema,
-// the class table and the first baseline snapshot. Frames after that are
-// handed to `on_frame` until it returns false.
-template <typename OnFrame>
-bool WalkEntityFrames(const std::string& path, EntityDecoder* decoder,
-                      OnFrame on_frame, std::string* error) {
-  DemoReader reader;
-  if (!reader.Open(path, error)) return false;
-
-  SerializerSet serializers;
-  ClassTable classes;
-  bool ready = false;
-  DemoFrame frame;
-  while (reader.Next(&frame)) {
-    if (frame.kind == kDemSendTables) {
-      if (!ParseSendTables(frame.body, &serializers, error)) return false;
-      continue;
-    }
-    if (frame.kind == kDemClassInfo) {
-      if (!ParseClassInfo(frame.body, &classes, error)) return false;
-      continue;
-    }
-    if (!ready && !serializers.serializers.empty() && !classes.names.empty()) {
-      if (!decoder->Init(serializers, classes, error)) return false;
-      ready = true;
-    }
-    if (!ready) continue;
-    if (frame.kind == kDemStringTables || frame.kind == kDemFullPacket) {
-      LoadBaselines(frame, decoder);
-    }
-    if (!on_frame(frame)) break;
-  }
-  if (!ready) {
-    *error = "demo carried no send tables or class info";
-    return false;
-  }
-  return true;
-}
-
 // Decodes every class's baseline on its own. A baseline is an update encoded
 // exactly like a packet's, but for one class in isolation, so it is the
 // cleanest possible check of that class's decoders: it either reads to the
@@ -545,10 +575,15 @@ int CommandBaselines(const std::vector<std::string>& args) {
 
   EntityDecoder decoder;
   if (!want.empty()) decoder.set_trace(1 << 20);
+  DemoReader reader;
   std::string error;
+  if (!reader.Open(args[0], &error)) {
+    std::cerr << "error: " << error << "\n";
+    return 1;
+  }
   // Only the first snapshot is needed; stop at the first packet after it.
   bool have_baselines = false;
-  const bool ok = WalkEntityFrames(args[0], &decoder, [&](const DemoFrame& frame) {
+  const bool ok = WalkEntityFrames(&reader, &decoder, [&](const DemoFrame& frame) {
     if (decoder.baseline_count() > 0) have_baselines = true;
     return !(have_baselines && frame.kind == kDemPacket);
   }, &error);
@@ -596,7 +631,7 @@ int CommandBaselines(const std::vector<std::string>& args) {
 // useful output is the desync count and a handful of real coordinates.
 int CommandEntities(const std::vector<std::string>& args) {
   if (args.empty()) {
-    std::cerr << "usage: cs2mv entities <demo file> [max packets]\n";
+    std::cerr << "usage: cs2mv entities <demo file> [max packets] [class to dump]\n";
     return 2;
   }
   const long long limit = args.size() > 1 ? std::atoll(args[1].c_str()) : 400;
@@ -610,33 +645,15 @@ int CommandEntities(const std::vector<std::string>& args) {
   std::string first_failure;
   std::string error;
 
-  const bool ok = WalkEntityFrames(args[0], &decoder, [&](const DemoFrame& frame) {
-    if (frame.kind != kDemPacket && frame.kind != kDemSignonPacket) return true;
-
-    // Walk the packet for svc_PacketEntities (55).
-    pb::Reader r(frame.body);
-    pb::Slice payload;
-    std::uint32_t field = 0;
-    while (r.NextField(&field)) {
-      if (field == 3 && r.wire_type() == pb::kLengthDelimited) payload = r.ReadBytes();
-    }
-    if (payload.data == nullptr) return true;
-
-    BitReader bits(payload.data, payload.size);
-    std::string buf;
-    while (bits.BitsLeft() > 8) {
-      const std::uint32_t kind = bits.ReadUBitVar();
-      const std::uint32_t size = bits.ReadVarUInt32();
-      if (!bits.ok() || size > (1u << 24)) break;
-      buf.resize(size);
-      if (size > 0 && !bits.ReadBytes(&buf[0], size)) break;
-      if (kind != 55) continue;
-
-      std::string packet_error;
-      if (!decoder.ApplyPacket(buf, &packet_error) && first_failure.empty()) {
-        first_failure = "packet " + std::to_string(packets) + ": " + packet_error;
-      }
-      ++packets;
+  DemoReader reader;
+  if (!reader.Open(args[0], &error)) {
+    std::cerr << "error: " << error << "\n";
+    return 1;
+  }
+  const bool ok = WalkEntityFrames(&reader, &decoder, [&](const DemoFrame& frame) {
+    std::string packet_error;
+    if (!ApplyPacketFrame(frame, &decoder, &packets, &packet_error) && first_failure.empty()) {
+      first_failure = "packet " + std::to_string(packets - 1) + ": " + packet_error;
     }
     return !(limit > 0 && packets >= limit);
   }, &error);
@@ -679,6 +696,29 @@ int CommandEntities(const std::vector<std::string>& args) {
     if (++shown >= 12) break;
   }
   if (shown == 0) std::cout << "  (none decoded)\n";
+
+  // Every field of every entity of one class, for finding out what a class
+  // actually carries before building on it.
+  if (args.size() > 2) {
+    for (const auto& entry : decoder.entities()) {
+      const Entity& entity = entry.second;
+      if (entity.class_name != args[2]) continue;
+      std::printf("\n%s entity %d (serial %d)\n", entity.class_name.c_str(), entity.index,
+                  entity.serial);
+      for (const auto& value : entity.values) {
+        const FieldValue& v = value.second;
+        std::printf("  %-50s ", value.first.c_str());
+        switch (v.kind) {
+          case FieldValue::kFloat:
+            std::printf("%g %g %g %g\n", v.v[0], v.v[1], v.v[2], v.v[3]);
+            break;
+          case FieldValue::kInt: std::printf("%lld\n", v.i); break;
+          case FieldValue::kUInt: std::printf("%llu\n", v.u); break;
+          default: std::printf("\"%s\"\n", v.s.c_str()); break;
+        }
+      }
+    }
+  }
   return first_failure.empty() ? 0 : 1;
 }
 
@@ -753,27 +793,78 @@ int CommandServe(const Options& options) {
                       std::to_string(code.token) + "}");
   });
 
-  server.Route("/api/match", [&options](const HttpRequest& request,
-                                        HttpResponse* response) {
+  static DemoCache demos(options);
+  auto target_of = [](const HttpRequest& request) {
     std::string target = request.Param("code");
     if (target.empty()) target = request.Param("demo");
+    return target;
+  };
+
+  server.Route("/api/match", [&](const HttpRequest& request, HttpResponse* response) {
+    const std::string target = target_of(request);
     if (target.empty()) {
       response->SetError(400, "pass ?code=<share code> or ?demo=<path>");
       return;
     }
-    // Parsing a demo costs hundreds of megabytes; one at a time keeps a
-    // browser's parallel requests from multiplying that, and keeps two
-    // requests for the same match from racing on the cache file.
-    static std::mutex parse_mutex;
-    std::lock_guard<std::mutex> lock(parse_mutex);
-
-    Match match;
+    std::shared_ptr<Match> match;
     std::string error;
-    if (!LoadMatch(target, options, &match, &error)) {
+    if (!demos.Get(target, false, &match, nullptr, &error)) {
       response->SetError(404, error);
       return;
     }
-    response->SetJson(MatchToJson(match, false));
+    response->SetJson(MatchToJson(*match, false));
+  });
+
+  // The 2D replay, one round at a time: ?round=N picks a round by its
+  // number as the match reports it, and the frames come back trimmed to
+  // that round's ticks. Without a round the whole match comes back, which
+  // is several megabytes.
+  server.Route("/api/replay", [&](const HttpRequest& request, HttpResponse* response) {
+    const std::string target = target_of(request);
+    if (target.empty()) {
+      response->SetError(400, "pass ?code=<share code> or ?demo=<path>");
+      return;
+    }
+    std::shared_ptr<Match> match;
+    std::shared_ptr<Replay> replay;
+    std::string error;
+    if (!demos.Get(target, true, &match, &replay, &error)) {
+      response->SetError(404, error);
+      return;
+    }
+    int from = 0, to = 0;
+    const std::string round_text = request.Param("round");
+    if (!round_text.empty()) {
+      const int number = std::atoi(round_text.c_str());
+      const Round* round = nullptr;
+      for (const Round& r : match->rounds) {
+        if (r.number == number) round = &r;
+      }
+      if (round == nullptr) {
+        response->SetError(404, "no round " + round_text);
+        return;
+      }
+      from = round->start_tick;
+      to = round->end_tick;
+    }
+    response->SetJson(ReplayToJson(*replay, from, to));
+  });
+
+  server.Route("/api/replay/map", [&](const HttpRequest& request, HttpResponse* response) {
+    const std::string target = target_of(request);
+    if (target.empty()) {
+      response->SetError(400, "pass ?code=<share code> or ?demo=<path>");
+      return;
+    }
+    std::shared_ptr<Match> match;
+    std::shared_ptr<Replay> replay;
+    std::string error;
+    if (!demos.Get(target, true, &match, &replay, &error)) {
+      response->SetError(404, error);
+      return;
+    }
+    response->content_type = "image/png";
+    response->body = ReplayMapPng(*replay);
   });
 
   // --- Steam sign-in, for the game coordinator helper.
@@ -1009,6 +1100,7 @@ int main(int argc, char** argv) {
   if (command == "inspect") return CommandInspect(args);
   if (command == "schema") return CommandSchema(args);
   if (command == "entities") return CommandEntities(args);
+  if (command == "replay") return CommandReplay(args, options);
   if (command == "baselines") return CommandBaselines(args);
   if (command == "fetch") return CommandFetch(args, options);
   if (command == "gc-request") return CommandGcRequest(args);

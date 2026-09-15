@@ -25,6 +25,9 @@ class JsonWriter {
   void Value(const char* v) { Value(std::string(v)); }
   void Value(bool v) { Sep(); out_ += v ? "true" : "false"; }
   void Value(double v);
+  // A number with a fixed count of decimals, trailing zeros trimmed: for
+  // coordinates, where "%.4g" would drop the fraction of anything over 999.
+  void Fixed(double v, int decimals);
 
   // Integer overloads are spelled with fundamental types rather than the
   // <cstdint> aliases so that the set stays distinct on both LP64 and LLP64.

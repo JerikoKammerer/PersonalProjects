@@ -27,7 +27,9 @@ add_library(cs2mv STATIC
   src/locator.cpp
   src/match.cpp
   src/parser.cpp
+  src/png.cpp
   src/protobuf.cpp
+  src/replay.cpp
   src/entities.cpp
   src/fieldpath.cpp
   src/serializers.cpp
@@ -57,6 +59,7 @@ add_executable(cs2mv_tests
   tests/test_fieldpath.cpp
   tests/test_http.cpp
   tests/test_protobuf.cpp
+  tests/test_replay.cpp
   tests/test_sharecode.cpp
 )
 target_link_libraries(cs2mv_tests PRIVATE cs2mv)

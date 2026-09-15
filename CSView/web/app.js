@@ -3,6 +3,7 @@
 const $ = (id) => document.getElementById(id);
 
 let current = null;      // the match payload last loaded
+let currentTarget = '';  // what was typed to load it: a share code or a path
 let sortKey = 'kills';
 let sortDesc = true;
 let selectedRound = -1;
@@ -41,7 +42,9 @@ async function load(target) {
       return;
     }
     current = payload;
+    currentTarget = target;
     selectedRound = -1;
+    ReplayView.close();
     render();
     setStatus('');
   } catch (err) {
@@ -169,11 +172,13 @@ function renderRoundDetail() {
   const box = $('round-detail');
   if (selectedRound < 0 || !current.rounds[selectedRound]) {
     box.hidden = true;
+    ReplayView.close();
     return;
   }
   const round = current.rounds[selectedRound];
   box.hidden = false;
   box.innerHTML = '';
+  ReplayView.open(current, round, currentTarget);
 
   const title = document.createElement('h4');
   const notes = [];

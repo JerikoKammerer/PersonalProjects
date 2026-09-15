@@ -95,9 +95,36 @@
   </section>
 
   <section class="timeline">
-    <h3>Rounds <span class="hint">click a round for its kill feed</span></h3>
+    <h3>Rounds <span class="hint">click a round for its kill feed and 2D replay</span></h3>
     <div id="rounds" class="rounds"></div>
     <div id="round-detail" class="round-detail" hidden></div>
+  </section>
+
+  <section id="replay" class="replay" hidden>
+    <h3>2D replay
+      <span class="hint">space plays and pauses, arrows skip; the map is drawn from where
+        the players walked, so unexplored corners stay dark</span></h3>
+    <p id="replay-note" class="replay-note"></p>
+    <div class="replay-layout">
+      <div class="replay-stage">
+        <canvas id="replay-canvas" width="640" height="640"></canvas>
+      </div>
+      <div class="replay-side">
+        <div class="replay-controls">
+          <button type="button" id="replay-play">Play</button>
+          <select id="replay-speed">
+            <option value="1">1×</option>
+            <option value="2" selected>2×</option>
+            <option value="4">4×</option>
+            <option value="8">8×</option>
+          </select>
+          <span id="replay-clock" class="replay-clock">0:00 / 0:00</span>
+        </div>
+        <input type="range" id="replay-seek" min="0" max="0" value="0">
+        <div id="replay-players" class="replay-players"></div>
+        <div id="replay-feed" class="replay-feed"></div>
+      </div>
+    </div>
   </section>
 
   <section id="warnings-box" class="warnings" hidden>
@@ -122,6 +149,7 @@
   </p>
 </footer>
 
+<script src="/replay.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

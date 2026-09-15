@@ -19,7 +19,10 @@
 #include <string>
 #include <vector>
 
+#include <functional>
+
 #include "cs2mv/bits.h"
+#include "cs2mv/demo.h"
 #include "cs2mv/fieldpath.h"
 #include "cs2mv/serializers.h"
 
@@ -244,6 +247,25 @@ class EntityDecoder {
   long long updates_applied_ = 0;
   long long packets_failed_ = 0;
 };
+
+// Loads the instancebaseline string table out of a DEM_StringTables or
+// DEM_FullPacket frame into the decoder.
+void LoadBaselines(const DemoFrame& frame, EntityDecoder* decoder);
+
+// Feeds every svc_PacketEntities message inside a DEM_Packet or
+// DEM_SignonPacket frame to the decoder. `packets` counts the messages seen.
+// Returns false on the first desync, with the reason in `error`.
+bool ApplyPacketFrame(const DemoFrame& frame, EntityDecoder* decoder, long long* packets,
+                      std::string* error);
+
+// Drives a decoder over a demo: the schema and class table are read first,
+// baselines are loaded as their snapshots come by, and every frame after the
+// decoder is ready goes to `on_frame`, which returns false to stop early.
+// Applying packets is left to the callback, so a caller that only wants the
+// baselines does not pay for decoding the match.
+bool WalkEntityFrames(DemoReader* reader, EntityDecoder* decoder,
+                      const std::function<bool(const DemoFrame&)>& on_frame,
+                      std::string* error);
 
 }  // namespace cs2mv
 

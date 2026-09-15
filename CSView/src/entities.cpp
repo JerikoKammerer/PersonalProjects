@@ -756,4 +756,116 @@ bool EntityDecoder::ApplyPacket(const std::string& message, std::string* error) 
   return true;
 }
 
+// ---------------------------------------------------------------- demo glue
+
+void LoadBaselines(const DemoFrame& frame, EntityDecoder* decoder) {
+  // CDemoStringTables { tables = 1 { table_name = 1, items = 2 { str = 1,
+  // data = 2 } } }; a DEM_FullPacket wraps one in its field 1.
+  pb::Slice tables{reinterpret_cast<const std::uint8_t*>(frame.body.data()),
+                   frame.body.size()};
+  if (frame.kind == kDemFullPacket) {
+    tables = pb::Slice{};
+    pb::Reader r(frame.body);
+    std::uint32_t field = 0;
+    while (r.NextField(&field)) {
+      if (field == 1 && r.wire_type() == pb::kLengthDelimited) tables = r.ReadBytes();
+    }
+    if (tables.data == nullptr) return;
+  }
+
+  pb::Reader r(tables);
+  std::uint32_t field = 0;
+  while (r.NextField(&field)) {
+    if (field != 1 || r.wire_type() != pb::kLengthDelimited) continue;
+    pb::Reader table(r.ReadBytes());
+    std::string name;
+    std::vector<pb::Slice> items;
+    std::uint32_t f = 0;
+    while (table.NextField(&f)) {
+      if (f == 1) {
+        name = table.ReadString();
+      } else if (f == 2 && table.wire_type() == pb::kLengthDelimited) {
+        items.push_back(table.ReadBytes());
+      }
+    }
+    if (name != "instancebaseline") continue;
+    for (const pb::Slice& item : items) {
+      pb::Reader entry(item);
+      std::string key;
+      pb::Slice data;
+      std::uint32_t g = 0;
+      while (entry.NextField(&g)) {
+        if (g == 1) {
+          key = entry.ReadString();
+        } else if (g == 2 && entry.wire_type() == pb::kLengthDelimited) {
+          data = entry.ReadBytes();
+        }
+      }
+      // Alternate baselines are keyed "class:index"; only the plain ones are
+      // the class defaults.
+      if (key.empty() || key.find(':') != std::string::npos || data.data == nullptr) continue;
+      decoder->SetBaseline(std::atoi(key.c_str()), data.ToString());
+    }
+  }
+}
+
+bool ApplyPacketFrame(const DemoFrame& frame, EntityDecoder* decoder, long long* packets,
+                      std::string* error) {
+  if (frame.kind != kDemPacket && frame.kind != kDemSignonPacket) return true;
+
+  // CDemoPacket { data = 3 }: a bit stream of (ubitvar kind, varint size,
+  // bytes) messages. svc_PacketEntities is 55.
+  pb::Reader r(frame.body);
+  pb::Slice payload;
+  std::uint32_t field = 0;
+  while (r.NextField(&field)) {
+    if (field == 3 && r.wire_type() == pb::kLengthDelimited) payload = r.ReadBytes();
+  }
+  if (payload.data == nullptr) return true;
+
+  BitReader bits(payload.data, payload.size);
+  std::string buf;
+  while (bits.BitsLeft() > 8) {
+    const std::uint32_t kind = bits.ReadUBitVar();
+    const std::uint32_t size = bits.ReadVarUInt32();
+    if (!bits.ok() || size > (1u << 24)) break;
+    buf.resize(size);
+    if (size > 0 && !bits.ReadBytes(&buf[0], size)) break;
+    if (kind != 55) continue;
+    if (packets != nullptr) ++*packets;
+    if (!decoder->ApplyPacket(buf, error)) return false;
+  }
+  return true;
+}
+
+bool WalkEntityFrames(DemoReader* reader, EntityDecoder* decoder,
+                      const std::function<bool(const DemoFrame&)>& on_frame,
+                      std::string* error) {
+  SerializerSet serializers;
+  ClassTable classes;
+  bool ready = false;
+  DemoFrame frame;
+  while (reader->Next(&frame)) {
+    if (frame.kind == kDemSendTables) {
+      if (!ParseSendTables(frame.body, &serializers, error)) return false;
+      continue;
+    }
+    if (frame.kind == kDemClassInfo) {
+      if (!ParseClassInfo(frame.body, &classes, error)) return false;
+      continue;
+    }
+    if (!ready && !serializers.serializers.empty() && !classes.names.empty()) {
+      if (!decoder->Init(serializers, classes, error)) return false;
+      ready = true;
+    }
+    if (!ready) continue;
+    if (frame.kind == kDemStringTables || frame.kind == kDemFullPacket) {
+      LoadBaselines(frame, decoder);
+    }
+    if (!on_frame(frame)) break;
+  }
+  if (!ready) return Err(error, "demo carried no send tables or class info");
+  return true;
+}
+
 }  // namespace cs2mv

@@ -9,6 +9,7 @@ cs2mv serve                # http://127.0.0.1:8080
 cs2mv decode CSGO-Cji4Z-rQMJJ-s6Jyq-ovwoS-mJkDA
 cs2mv add    CSGO-Cji4Z-... http://replay191.valve.net/730/003693....dem.bz2
 cs2mv parse  match.dem --pretty
+cs2mv replay match.dem frames.json map.png
 ```
 
 The UI opens with **Your matches** - every demo CS2 has downloaded on this
@@ -18,8 +19,9 @@ the Steam helper signed in, a button also pulls the account's full match
 history from the game coordinator, share codes and all.
 
 Opening a match shows the map and score, a scoreboard (K/D/A, ADR, HS%, MVPs,
-entry kills, flashes, utility damage), a round-by-round timeline and a
-per-round kill feed.
+entry kills, flashes, utility damage), a round-by-round timeline, a per-round
+kill feed, and a 2D replay of any round: players, view directions, health,
+weapons, grenades, fire, the bomb, on a map drawn from where they walked.
 
 ---
 
@@ -246,15 +248,50 @@ Seeking to a round is a **console command rather than a launch argument**:
 the demo is ready. Each round in the timeline offers its `demo_gototick <tick>`
 to copy and paste into the CS2 console.
 
-**The browser renders it**, which would mean a 2D top-down replay of the kind
-csstats.gg and Leetify show. That needs player positions every tick, and
-positions live in entity state - the flattened-serializer decoding this parser
-deliberately skips. Not a small addition: field-path decoding through a Huffman
-tree, per-field decoders driven by serializer metadata, class baselines, and
-cell-plus-offset coordinate reconstruction. It is the largest single piece of a
-Source 2 parser, several times the size of everything here, and it is the part
-that breaks on game updates. It is not implemented, and pretending otherwise
-with something half-working would be worse than not having it.
+**The browser renders it**: the 2D top-down replay under the round list, of
+the kind csstats.gg and Leetify show. Click a round and it plays: every
+player's position and view direction sixteen times a second, health, active
+weapon, who carries the bomb, smokes as they bloom, fires as they spread, HE
+and flash projectiles in the air, the planted bomb, and a cross where each
+death happened, with the round's kill feed alongside it and clickable to seek.
+
+### Where the replay comes from
+
+Positions live in entity state, which a demo carries as `svc_PacketEntities`:
+a dense bit stream with no length prefixes and no field names, where reading
+one field correctly requires having read every field before it correctly. The
+decoder for it is in `entities.cpp` and `fieldpath.cpp`, built from the demo's
+own schema (`DEM_SendTables`), the class table (`DEM_ClassInfo`) and the
+instance baselines the string tables carry. It stays in sync for the whole of
+every retail demo tested - a full match is around 126,000 packets and 25
+million field updates - and `cs2mv entities <demo>` reports the count of
+desynchronised packets, which should be zero.
+
+Several of the wire encodings had to be settled against real packets rather
+than taken from descriptions, and the notes in `entities.cpp` say which and
+how: the rounding flags of quantised floats spend no bits and only shift the
+range; the zero flag is omitted when zero already lands on a code; a `QAngle`
+declared with 32 bits is three plain floats; a serializer name can carry
+several versions, and a field says which it embeds; a pointer to a base class
+can point at any of the alternatives its schema lists, chosen per entity. The
+tool that made this tractable is `cs2mv baselines <demo> [class]`: a class's
+baseline is an update in the same encoding, in isolation, and either reads to
+the end with only padding left or the decoders for that class are wrong.
+
+**No map images are shipped.** The radar images are Valve's, so the map is
+drawn from the match itself: the game rules entity declares the radar's world
+extent, every position a living player occupied is accumulated on a 16 unit
+grid, and `/api/replay/map` renders that as a walkable area, shaded by how
+well trodden it is. One match reveals most of a map; corners nobody visited
+stay dark. The bomb sites are the `CBombTarget` trigger volumes the map
+declares, lettered by asking which zone the game said each player was in.
+Any map works this way, including ones that did not exist when this was
+written.
+
+`cs2mv replay <demo> [frames.json] [map.png]` builds the same thing from the
+command line. A match is about 30,000 frames and 20 MB of JSON; the server
+hands the page one round at a time, and keeps the last two parsed demos in
+memory so switching rounds is instant.
 
 The `/api/watch` endpoint is the one route that starts a program, so unlike the
 read-only routes it refuses a cross-origin caller - a page on the open web can
@@ -380,8 +417,14 @@ three report the swap at round 13, i.e. halftime after round 12, which is MR12.
 * MVPs are always zero on retail demos: `round_mvp` is not broadcast either.
 * `CDemoFileInfo` sits after `DEM_Stop` and so is never reached by a forward
   read; playback length falls back to the last tick seen.
-* No entity state, so no positions, economy, equipment, or anything derived
-  from them (opening duels by site, trade kills, clutch detection).
+* Entity state is decoded for the replay, but the scoreboard and round
+  results are still built from game events; economy, equipment value and
+  derived statistics (trade kills, clutches, opening duels by site) are not
+  reported yet.
+* `CTransform` fields have no decoder. None has been seen sent in a retail
+  demo; if one is, that packet is reported as a desync rather than misread.
+* The map image only covers where players walked. A map seen in a single
+  short match will have gaps.
 * Bit-packed `svc_CreateStringTable` / `svc_UpdateStringTable` deltas are not
   decoded. Player identity comes from the full string table snapshots in
   `DEM_StringTables` / `DEM_FullPacket` frames, which are plain protobuf.

@@ -16,6 +16,23 @@ void JsonWriter::Value(double v) {
   out_ += buf;
 }
 
+void JsonWriter::Fixed(double v, int decimals) {
+  Sep();
+  if (std::isnan(v) || std::isinf(v)) {
+    out_ += "null";
+    return;
+  }
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "%.*f", decimals, v);
+  std::string s(buf);
+  if (s.find('.') != std::string::npos) {
+    while (!s.empty() && s.back() == '0') s.pop_back();
+    if (!s.empty() && s.back() == '.') s.pop_back();
+  }
+  if (s == "-0") s = "0";
+  out_ += s;
+}
+
 void JsonWriter::AppendQuoted(const std::string& s) {
   out_ += '"';
   for (unsigned char c : s) {

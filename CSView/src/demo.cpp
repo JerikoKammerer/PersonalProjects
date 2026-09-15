@@ -143,6 +143,12 @@ bool DemoReader::ReadVarint(std::uint32_t* out) {
   return false;
 }
 
+void DemoReader::Rewind() {
+  pos_ = data_.empty() ? 0 : kHeaderSize;
+  stopped_ = false;
+  error_.clear();
+}
+
 bool DemoReader::Next(DemoFrame* frame) {
   if (stopped_ || failed()) return false;
   if (pos_ >= data_.size()) return false;  // clean end of file
