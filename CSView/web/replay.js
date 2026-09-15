@@ -139,7 +139,12 @@ const ReplayView = (() => {
       if (victim === undefined) continue;
       const frame = frameAtTick(kill.tick);
       const sample = frame ? frame[1].find((s) => s[0] === victim) : null;
-      if (sample) state.deaths.push({ tick: kill.tick, x: sample[1], y: sample[2], team: sample[7] });
+      if (!sample) continue;
+      const death = { tick: kill.tick, x: sample[1], y: sample[2], team: sample[7], from: null };
+      const attacker = state.matchToReplay.get(kill.attacker);
+      const shooter = attacker !== undefined ? frame[1].find((s) => s[0] === attacker) : null;
+      if (shooter && shooter !== sample) death.from = { x: shooter[1], y: shooter[2] };
+      state.deaths.push(death);
     }
 
     const seek = el('replay-seek');
@@ -299,10 +304,22 @@ const ReplayView = (() => {
     const span = b[0] - a[0];
     const t = span > 0 ? Math.max(0, Math.min(1, (tickNow - a[0]) / span)) : 0;
 
-    // Deaths so far this round.
+    // Deaths so far this round, and for a moment after each, a line from
+    // whoever did it.
     for (const death of state.deaths) {
       if (death.tick > tickNow) continue;
       drawCross(ctx, T.x(death.x), T.y(death.y), T.px(5), teamColor(death.team, 0.55));
+      const age = (tickNow - death.tick) / r.tickRate;
+      if (death.from && age < 2.5) {
+        ctx.strokeStyle = `rgba(248, 113, 113, ${0.9 * (1 - age / 2.5)})`;
+        ctx.lineWidth = T.px(1.5);
+        ctx.setLineDash([T.px(4), T.px(3)]);
+        ctx.beginPath();
+        ctx.moveTo(T.x(death.from.x), T.y(death.from.y));
+        ctx.lineTo(T.x(death.x), T.y(death.y));
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
     }
 
     // Grenades: from the earlier frame; they are not interpolated.
