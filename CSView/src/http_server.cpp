@@ -35,6 +35,8 @@ std::string ContentTypeFor(const std::string& path) {
   if (ext == ".json") return "application/json; charset=utf-8";
   if (ext == ".svg") return "image/svg+xml";
   if (ext == ".png") return "image/png";
+  if (ext == ".jpg" || ext == ".jpeg") return "image/jpeg";
+  if (ext == ".webp") return "image/webp";
   if (ext == ".ico") return "image/x-icon";
   return "application/octet-stream";
 }

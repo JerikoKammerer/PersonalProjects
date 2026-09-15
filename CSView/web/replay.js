@@ -32,13 +32,36 @@ const ReplayView = (() => {
   };
   const weaponName = (key) => WEAPON_NAMES[key] || (key ? key.toUpperCase() : '');
 
+  // Radar images, by map. Each is placed in the world by a top-left corner
+  // (posX, posY) and a scale in units per pixel of a 1024 wide image - the
+  // convention the game's own overview files use. Those numbers are only a
+  // starting point: whenever a match is opened, the placement is refined
+  // against where the players actually walked (see fitRadar), which also
+  // handles an image that is a crop, a thumbnail, or has no numbers at all.
+  const RADARS = {
+    de_ancient: { file: 'de_ancient.jpg' },
+    de_anubis: { file: 'de_anubis.jpg', posX: -2796, posY: 3328, scale: 5.22 },
+    de_cache: { file: 'de_cache.jpg', posX: -2000, posY: 3250, scale: 5.5 },
+    de_dust2: { file: 'de_dust2.jpg', posX: -2476, posY: 3239, scale: 4.4 },
+    de_inferno: { file: 'de_inferno.jpg', posX: -2087, posY: 3870, scale: 4.9 },
+    de_mirage: { file: 'de_mirage.jpg', posX: -3230, posY: 1713, scale: 5.0 },
+    // The in-game overview with its grid, upper level only; the lower level
+    // is drawn as an inset that is not placed yet.
+    de_nuke: { file: 'de_nuke.jpg', ignore: [0.05, 0.05, 0.4, 0.55] },
+  };
+  const MIN_FIT = 0.9;  // share of walked cells that must land on the drawing
+
   const state = {
     match: null,        // the match payload from /api/match
     target: null,       // what was typed: share code or path
     round: null,        // the selected round from the match payload
     replay: null,       // /api/replay payload for that round
-    map: null,          // Image of /api/replay/map
+    map: null,          // Image of /api/replay/map: where players walked
+    walked: null,       // the same, unblurred: one opaque pixel per walked cell
     mapTarget: null,
+    radar: null,        // Image of the map's radar, once it is placed
+    radarFit: null,     // {posX, posY, s (units per pixel), score}
+    radarNote: '',
     frames: [],
     time: 0,            // seconds since the round's first frame
     duration: 0,
@@ -62,6 +85,8 @@ const ReplayView = (() => {
     if (state.target !== target) {
       state.target = target;
       state.byRound.clear();
+      state.replay = null;
+      state.frames = [];
     }
     stop();
     el('replay').hidden = false;
@@ -98,14 +123,209 @@ const ReplayView = (() => {
   }
 
   function loadMap(target) {
+    state.radar = null;
+    state.radarFit = null;
+    state.radarNote = '';
+    state.radarTried = false;
+    state.walked = null;
     const image = new Image();
     image.onload = () => {
-      if (state.mapTarget === target) {
-        state.map = image;
-        draw();
-      }
+      if (state.mapTarget !== target) return;
+      state.map = image;
+      draw();
+      placeRadar(target);
     };
     image.src = `/api/replay/map?code=${encodeURIComponent(target)}`;
+    const walked = new Image();
+    walked.onload = () => {
+      if (state.mapTarget !== target) return;
+      state.walked = walked;
+      placeRadar(target);
+    };
+    walked.src = `/api/replay/map?code=${encodeURIComponent(target)}&raw=1`;
+  }
+
+  // Loads the radar image for the current map, if there is one, and works
+  // out where it sits in the world from the walked-area image.
+  function placeRadar(target) {
+    const r = state.replay;
+    if (!r || !state.walked || state.radarTried) return;
+    state.radarTried = true;
+    const entry = RADARS[r.map];
+    if (!entry) {
+      state.radarNote = 'no radar image for this map; showing where players walked';
+      updateNote();
+      return;
+    }
+    const image = new Image();
+    image.onload = () => {
+      if (state.mapTarget !== target) return;
+      const fit = fitRadar(image, entry, state.walked, r);
+      state.lastFit = fit;
+      if (fit && fit.score >= MIN_FIT) {
+        state.radar = keyOutBackground(image);
+        state.radarFit = fit;
+        state.radarNote = `radar placed from play (${Math.round(fit.score * 100)}% of walked ground on the drawing)`;
+        console.log(`radar fit for ${r.map}: posX=${fit.posX.toFixed(1)} posY=${fit.posY.toFixed(1)} ` +
+                    `scale@1024=${(fit.s * image.width / 1024).toFixed(4)} score=${fit.score.toFixed(4)}`);
+      } else {
+        state.radarNote = 'the radar image could not be matched to this match; showing where players walked';
+      }
+      updateNote();
+      resize();
+      draw();
+    };
+    image.onerror = () => { state.radarNote = 'radar image missing'; updateNote(); };
+    image.src = `/maps/${entry.file}`;
+  }
+
+  function updateNote() {
+    const note = el('replay-note');
+    if (!note.textContent || note.textContent.startsWith('radar') ||
+        note.textContent.startsWith('no radar') || note.textContent.startsWith('the radar')) {
+      note.textContent = state.radarNote;
+    }
+  }
+
+  // The radar drawings come on white; the page is dark. Near-white pixels
+  // become transparent so the drawing sits on the page's own ground, with a
+  // soft ramp so anti-aliased edges do not turn into a halo.
+  function keyOutBackground(image) {
+    const c = document.createElement('canvas');
+    c.width = image.width;
+    c.height = image.height;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(image, 0, 0);
+    const data = ctx.getImageData(0, 0, c.width, c.height);
+    const px = data.data;
+    for (let i = 0; i < px.length; i += 4) {
+      const darkest = Math.min(px[i], px[i + 1], px[i + 2]);
+      if (darkest >= 215) {
+        const alpha = Math.max(0, Math.min(1, (240 - darkest) / 25));
+        px[i + 3] = Math.round(px[i + 3] * alpha);
+      }
+    }
+    ctx.putImageData(data, 0, 0);
+    return c;
+  }
+
+  // ------------------------------------------------------------ radar fitting
+  //
+  // The walked-area image is a grid of cells over known world bounds; the
+  // radar is a drawing with a white or transparent background. The placement
+  // that puts the most walked cells onto drawn pixels is the right one, and a
+  // pattern search from a decent first guess finds it in well under a second.
+
+  function radarMask(image, entry) {
+    const limit = 384;
+    const k = Math.min(1, limit / Math.max(image.width, image.height));
+    const w = Math.max(1, Math.round(image.width * k));
+    const h = Math.max(1, Math.round(image.height * k));
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(image, 0, 0, w, h);
+    const px = ctx.getImageData(0, 0, w, h).data;
+    const mask = new Uint8Array(w * h);
+    const ignore = entry.ignore ? entry.ignore.map((f, i) => f * (i % 2 ? h : w)) : null;
+    for (let y = 0; y < h; ++y) {
+      for (let x = 0; x < w; ++x) {
+        if (ignore && x >= ignore[0] && x < ignore[2] && y >= ignore[1] && y < ignore[3]) continue;
+        const i = (y * w + x) * 4;
+        const dark = Math.min(px[i], px[i + 1], px[i + 2]) < 225;
+        mask[y * w + x] = px[i + 3] > 40 && dark ? 1 : 0;
+      }
+    }
+    return { mask, w, h, k };
+  }
+
+  function walkedCells(mapImage, r) {
+    const c = document.createElement('canvas');
+    c.width = mapImage.width;
+    c.height = mapImage.height;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(mapImage, 0, 0);
+    const px = ctx.getImageData(0, 0, c.width, c.height).data;
+    const xs = [], ys = [];
+    const g = r.grid;
+    for (let row = 0; row < c.height; ++row) {
+      for (let col = 0; col < c.width; ++col) {
+        if (px[(row * c.width + col) * 4 + 3] === 0) continue;
+        xs.push(r.bounds.min[0] + (col + 0.5) * g.cell);
+        ys.push(r.bounds.min[1] + (c.height - 1 - row + 0.5) * g.cell);
+      }
+    }
+    return { xs, ys };
+  }
+
+  function fitRadar(image, entry, mapImage, r) {
+    const m = radarMask(image, entry);
+    const cells = walkedCells(mapImage, r);
+    const n = cells.xs.length;
+    if (n < 50) return null;
+
+    const score = (posX, posY, s) => {
+      let hit = 0;
+      const sx = m.k / s;
+      for (let i = 0; i < n; ++i) {
+        const px = ((cells.xs[i] - posX) * sx) | 0;
+        const py = ((posY - cells.ys[i]) * sx) | 0;
+        if (px >= 0 && py >= 0 && px < m.w && py < m.h && m.mask[py * m.w + px]) ++hit;
+      }
+      return hit / n;
+    };
+
+    // First guess: the walked area's extent against the drawing's extent.
+    let ix0 = m.w, ix1 = 0, iy0 = m.h, iy1 = 0;
+    for (let y = 0; y < m.h; ++y) {
+      for (let x = 0; x < m.w; ++x) {
+        if (!m.mask[y * m.w + x]) continue;
+        if (x < ix0) ix0 = x;
+        if (x > ix1) ix1 = x;
+        if (y < iy0) iy0 = y;
+        if (y > iy1) iy1 = y;
+      }
+    }
+    const sortedX = Array.from(cells.xs).sort((a, b) => a - b);
+    const sortedY = Array.from(cells.ys).sort((a, b) => a - b);
+    const q = (arr, f) => arr[Math.min(arr.length - 1, Math.floor(f * arr.length))];
+    const wx0 = q(sortedX, 0.002), wx1 = q(sortedX, 0.998);
+    const wy0 = q(sortedY, 0.002), wy1 = q(sortedY, 0.998);
+    const sGuess = ((wx1 - wx0) / ((ix1 - ix0) / m.k) + (wy1 - wy0) / ((iy1 - iy0) / m.k)) / 2;
+    const starts = [[wx0 - (ix0 / m.k) * sGuess, wy1 + (iy0 / m.k) * sGuess, sGuess]];
+    if (entry.scale) starts.push([entry.posX, entry.posY, entry.scale * 1024 / image.width]);
+
+    const refine = (start) => {
+      let best = start;
+      let bestScore = score(...best);
+      for (const [dp, ds] of [[40, 0.03], [10, 0.01], [2, 0.002], [0.5, 0.0005]]) {
+        let improved = true;
+        while (improved) {
+          improved = false;
+          for (let dx = -1; dx <= 1; ++dx) {
+            for (let dy = -1; dy <= 1; ++dy) {
+              for (let dk = -1; dk <= 1; ++dk) {
+                const cand = [best[0] + dx * dp, best[1] + dy * dp, best[2] * (1 + dk * ds)];
+                const sc = score(...cand);
+                if (sc > bestScore + 1e-9) {
+                  best = cand;
+                  bestScore = sc;
+                  improved = true;
+                }
+              }
+            }
+          }
+        }
+      }
+      return { posX: best[0], posY: best[1], s: best[2], score: bestScore };
+    };
+    let result = null;
+    for (const start of starts) {
+      const fit = refine(start);
+      if (!result || fit.score > result.score) result = fit;
+    }
+    return result;
   }
 
   function close() {
@@ -113,9 +333,24 @@ const ReplayView = (() => {
     el('replay').hidden = true;
   }
 
+  // The world rectangle on view: the radar when it is placed, else the game's
+  // own radar bounds.
+  function viewBounds() {
+    const r = state.replay;
+    if (state.radar && state.radarFit) {
+      const f = state.radarFit;
+      return {
+        min: [f.posX, f.posY - state.radar.height * f.s],
+        max: [f.posX + state.radar.width * f.s, f.posY],
+      };
+    }
+    return r.bounds;
+  }
+
   function show(payload) {
     state.replay = payload;
     state.frames = payload.frames;
+    placeRadar(state.target);
     const first = state.frames.length ? state.frames[0][0] : state.round.startTick;
     const last = state.frames.length ? state.frames[state.frames.length - 1][0] : first;
     state.duration = (last - first) / payload.tickRate;
@@ -227,8 +462,9 @@ const ReplayView = (() => {
     const r = state.replay;
     if (!r) return;
     const box = c.parentElement.getBoundingClientRect();
-    const worldW = r.bounds.max[0] - r.bounds.min[0];
-    const worldH = r.bounds.max[1] - r.bounds.min[1];
+    const view = viewBounds();
+    const worldW = view.max[0] - view.min[0];
+    const worldH = view.max[1] - view.min[1];
     const width = Math.max(320, Math.floor(box.width));
     const height = Math.round(width * worldH / worldW);
     const dpr = window.devicePixelRatio || 1;
@@ -240,12 +476,12 @@ const ReplayView = (() => {
   // World to canvas: x grows right, y grows up in the game and down on screen.
   function makeTransform() {
     const c = canvas();
-    const r = state.replay;
-    const sx = c.width / (r.bounds.max[0] - r.bounds.min[0]);
-    const sy = c.height / (r.bounds.max[1] - r.bounds.min[1]);
+    const view = viewBounds();
+    const sx = c.width / (view.max[0] - view.min[0]);
+    const sy = c.height / (view.max[1] - view.min[1]);
     return {
-      x: (wx) => (wx - r.bounds.min[0]) * sx,
-      y: (wy) => (r.bounds.max[1] - wy) * sy,
+      x: (wx) => (wx - view.min[0]) * sx,
+      y: (wy) => (view.max[1] - wy) * sy,
       s: (units) => units * sx,
       px: (n) => n * (window.devicePixelRatio || 1),
     };
@@ -265,8 +501,14 @@ const ReplayView = (() => {
     if (!r) return;
     const T = makeTransform();
 
-    // Map, then bomb sites on top of it.
-    if (state.map) {
+    // Map, then bomb sites on top of it. The radar drawing when it has been
+    // placed; otherwise the ground the players revealed.
+    if (state.radar && state.radarFit) {
+      const f = state.radarFit;
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(state.radar, T.x(f.posX), T.y(f.posY),
+                    T.s(state.radar.width * f.s), T.s(state.radar.height * f.s));
+    } else if (state.map) {
       const g = r.grid;
       const left = T.x(r.bounds.min[0]);
       const top = T.y(r.bounds.min[1] + g.height * g.cell);
@@ -576,5 +818,7 @@ const ReplayView = (() => {
   return {
     open: (match, round, target) => { open(match, round, target); renderFeed(); },
     close,
+    // For poking at the radar placement from the console.
+    lastFit: () => state.lastFit,
   };
 })();

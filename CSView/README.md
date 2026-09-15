@@ -278,15 +278,28 @@ tool that made this tractable is `cs2mv baselines <demo> [class]`: a class's
 baseline is an update in the same encoding, in isolation, and either reads to
 the end with only padding left or the decoders for that class are wrong.
 
-**No map images are shipped.** The radar images are Valve's, so the map is
-drawn from the match itself: the game rules entity declares the radar's world
-extent, every position a living player occupied is accumulated on a 16 unit
-grid, and `/api/replay/map` renders that as a walkable area, shaded by how
-well trodden it is. One match reveals most of a map; corners nobody visited
-stay dark. The bomb sites are the `CBombTarget` trigger volumes the map
-declares, lettered by asking which zone the game said each player was in.
-Any map works this way, including ones that did not exist when this was
-written.
+**The map under the players** is the game's own radar drawing when there is
+one in `web/maps/` (`de_<map>.jpg` - the images there are Valve's, from the
+game), and otherwise a map drawn from the match itself. Either way the world
+extent comes from the demo: the game rules entity declares the radar bounds,
+every position a living player occupied is accumulated on a 16 unit grid, and
+`/api/replay/map` renders that as a walkable area, shaded by how well trodden
+it is (`&raw=1` gives the unblurred footprint). One match reveals most of a
+map; corners nobody visited stay dark. The bomb sites are the `CBombTarget`
+trigger volumes the map declares, lettered by asking which zone the game said
+each player was in. Any map works this way, including ones that did not exist
+when this was written.
+
+A radar drawing is placed on the world by fitting, not by trusting a table:
+the page finds the offset and scale that put the most walked cells onto drawn
+pixels, starting from the numbers in the game's overview files where they are
+known and from the walked area's extent where they are not, and only uses the
+drawing when that fit covers at least 90% of the walked ground (the official
+drawings reach 99.6% and better). So a cropped or thumbnail-sized image works
+too, and a drawing that does not match the match falls back to the walked
+area. The placement is logged to the browser console. Nuke's image is the
+in-game overview, which draws the lower level as an inset; that inset is not
+placed yet, so Nuke currently falls back to the walked area.
 
 `cs2mv replay <demo> [frames.json] [map.png]` builds the same thing from the
 command line. A match is about 30,000 frames and 20 MB of JSON; the server

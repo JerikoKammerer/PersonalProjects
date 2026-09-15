@@ -4,3 +4,6 @@ tests/data/** binary
 
 # Batch files need CRLF to be reliable on Windows.
 *.bat text eol=crlf
+
+# Radar images.
+web/maps/** binary

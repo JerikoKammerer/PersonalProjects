@@ -131,6 +131,11 @@ std::string ReplayToJson(const Replay& replay, int from_tick, int to_tick);
 // replay's bounds, one pixel per grid cell.
 std::string ReplayMapPng(const Replay& replay);
 
+// The same grid with no blurring: a cell is opaque if anyone stood in it,
+// transparent otherwise. The exact footprint, for lining a drawing of the
+// map up with the world.
+std::string ReplayWalkedPng(const Replay& replay);
+
 }  // namespace cs2mv
 
 #endif  // CS2MV_REPLAY_H_

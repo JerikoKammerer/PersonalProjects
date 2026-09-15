@@ -864,7 +864,8 @@ int CommandServe(const Options& options) {
       return;
     }
     response->content_type = "image/png";
-    response->body = ReplayMapPng(*replay);
+    response->body = request.Param("raw").empty() ? ReplayMapPng(*replay)
+                                                  : ReplayWalkedPng(*replay);
   });
 
   // --- Steam sign-in, for the game coordinator helper.

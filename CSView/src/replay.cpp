@@ -555,6 +555,23 @@ std::string ReplayToJson(const Replay& replay, int from_tick, int to_tick) {
   return w.str();
 }
 
+std::string ReplayWalkedPng(const Replay& replay) {
+  const int w = replay.grid_w;
+  const int h = replay.grid_h;
+  if (w <= 0 || h <= 0 || replay.visits.empty()) return std::string();
+  std::vector<std::uint8_t> pixels(static_cast<std::size_t>(w) * h * 4, 0);
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      // World y grows upwards; image rows grow downwards.
+      if (replay.visits[static_cast<std::size_t>(h - 1 - y) * w + x] == 0) continue;
+      std::uint8_t* px = &pixels[(static_cast<std::size_t>(y) * w + x) * 4];
+      px[0] = px[1] = px[2] = 255;
+      px[3] = 255;
+    }
+  }
+  return EncodePngRgba8(w, h, pixels);
+}
+
 std::string ReplayMapPng(const Replay& replay) {
   const int w = replay.grid_w;
   const int h = replay.grid_h;
