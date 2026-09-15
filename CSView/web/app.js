@@ -155,7 +155,11 @@ function renderRounds() {
   renderRoundDetail();
 }
 
-function playerSpan(index, fallback) {
+// A player's name in the colour of a side. The side is passed in rather than
+// read off the player, because a kill feed shows the side they played that
+// round, and sides swap at halftime: the match's own `team` field is where
+// they ended up.
+function playerSpan(index, fallback, side) {
   const span = document.createElement('span');
   if (index < 0 || index >= current.players.length) {
     span.className = 'player-none';
@@ -163,7 +167,7 @@ function playerSpan(index, fallback) {
     return span;
   }
   const p = current.players[index];
-  span.className = 'player-' + teamClass(p.team);
+  span.className = 'player-' + teamClass(side === undefined ? p.team : side);
   span.textContent = p.name || `slot ${p.slot}`;
   return span;
 }
@@ -206,19 +210,20 @@ function renderRoundDetail() {
     time.textContent = formatClock(kill.time);
     li.appendChild(time);
 
-    li.appendChild(playerSpan(kill.attacker, 'world'));
+    li.appendChild(playerSpan(kill.attacker, 'world', kill.attackerTeam));
     const weapon = document.createElement('span');
     weapon.className = 'weapon';
     weapon.textContent = kill.weapon || 'killed';
     li.appendChild(weapon);
-    li.appendChild(playerSpan(kill.victim, 'unknown'));
+    li.appendChild(playerSpan(kill.victim, 'unknown', kill.victimTeam));
 
     if (kill.assister >= 0) {
       const assist = document.createElement('span');
       assist.className = 'weapon';
       assist.textContent = '+';
       li.appendChild(assist);
-      li.appendChild(playerSpan(kill.assister, ''));
+      // An assist comes from a teammate of the killer.
+      li.appendChild(playerSpan(kill.assister, '', kill.attackerTeam));
     }
     for (const [flag, label] of [
       ['headshot', 'hs'], ['wallbang', 'wallbang'], ['noscope', 'noscope'],

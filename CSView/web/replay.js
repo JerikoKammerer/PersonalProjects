@@ -766,19 +766,24 @@ const ReplayView = (() => {
         `<span class="time"></span><span class="who a"></span>` +
         `<span class="weapon"></span><span class="who v"></span>`;
       row.querySelector('.time').textContent = formatClock(kill.time);
+      // Sides as they were in this round, not where each player ended up.
       const a = row.querySelector('.a');
       a.textContent = attacker ? attacker.name : 'world';
-      a.classList.add(attacker && attacker.team === 3 ? 'ct' : 't');
+      a.classList.add(sideClass(kill.attackerTeam));
       row.querySelector('.weapon').textContent = kill.weapon + (kill.headshot ? ' (hs)' : '');
       const v = row.querySelector('.v');
       v.textContent = victim ? victim.name : '?';
-      v.classList.add(kill.victimTeam === 3 ? 'ct' : 't');
+      v.classList.add(sideClass(kill.victimTeam));
       row.addEventListener('click', () => {
         const first = state.frames.length ? state.frames[0][0] : kill.tick;
         seekTo((kill.tick - first) / state.replay.tickRate - 3);
       });
       box.appendChild(row);
     }
+  }
+
+  function sideClass(team) {
+    return team === 3 ? 'ct' : team === 2 ? 't' : 'none';
   }
 
   function formatClock(seconds) {

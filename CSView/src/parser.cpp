@@ -566,7 +566,41 @@ class MatchParser {
       if (first_team_round_ < 0 && (team == kTeamT || team == kTeamCT)) {
         first_team_round_ = static_cast<int>(match_->rounds.size()) + 1;
       }
+      // The side a player was first announced on is the one they played
+      // the second half on; the first half was the other one.
+      if (first_side_.size() < match_->players.size()) {
+        first_side_.resize(match_->players.size(), kTeamUnknown);
+      }
+      if (first_side_[static_cast<std::size_t>(idx)] == kTeamUnknown &&
+          (team == kTeamT || team == kTeamCT)) {
+        first_side_[static_cast<std::size_t>(idx)] = team;
+      }
     }
+  }
+
+  static int Opposite(int side) {
+    if (side == kTeamT) return kTeamCT;
+    if (side == kTeamCT) return kTeamT;
+    return kTeamUnknown;
+  }
+
+  // The side a player was on in a given round. Announced sides are exact;
+  // before the first announcement - the whole first half of a retail demo -
+  // it is the other side from the one they were first announced on.
+  int SideInRound(int player, const Round& round) const {
+    if (player < 0 || static_cast<std::size_t>(player) >= match_->players.size()) {
+      return kTeamUnknown;
+    }
+    const std::size_t idx = static_cast<std::size_t>(player);
+    const std::size_t which = static_cast<std::size_t>(round.number - 1);
+    if (which < round_sides_.size() && idx < round_sides_[which].size()) {
+      const int side = round_sides_[which][idx];
+      if (side == kTeamT || side == kTeamCT) return side;
+    }
+    if (first_team_round_ > 1 && round.number < first_team_round_ && idx < first_side_.size()) {
+      return Opposite(first_side_[idx]);
+    }
+    return match_->players[idx].team;
   }
 
   void OnPlayerDeath(const EventArgs& args) {
@@ -689,57 +723,82 @@ class MatchParser {
   // them, by the side they finished the match on, rather than the side they
   // happened to be playing that round. That is what a match score means.
   void ResolveRounds() {
-    int roster[2] = {0, 0};  // [0] the team shown as CT, [1] the team shown as T
-    for (const Player& p : match_->players) {
-      if (p.hltv) continue;
-      if (p.team == kTeamCT) ++roster[0];
-      if (p.team == kTeamT) ++roster[1];
+    // Every kill gets the sides of its round, so a kill feed stays right
+    // across the halftime swap and any overtime swaps after it. Kills before
+    // the first announcement were recorded with no side at all.
+    for (Round& r : match_->rounds) {
+      for (Kill& k : r.kills) {
+        k.attacker_team = SideInRound(k.attacker, r);
+        k.victim_team = SideInRound(k.victim, r);
+      }
     }
-    if (roster[0] == 0 || roster[1] == 0) return;  // sides never announced
+    // Kills were tallied as they happened, when a first half kill had no side
+    // to judge a team kill by. Tally them again now that every kill has one.
+    for (Player& p : match_->players) {
+      p.kills = 0;
+      p.headshots = 0;
+    }
+    for (const Round& r : match_->rounds) {
+      for (const Kill& k : r.kills) {
+        if (k.attacker < 0 || k.attacker == k.victim) continue;
+        Player& a = match_->players[static_cast<std::size_t>(k.attacker)];
+        if (k.attacker_team != kTeamUnknown && k.attacker_team == k.victim_team) {
+          a.kills--;
+        } else {
+          a.kills++;
+          if (k.headshot) a.headshots++;
+        }
+      }
+    }
+
+    bool any_sides = false;
+    for (const Player& p : match_->players) {
+      if (p.team == kTeamT || p.team == kTeamCT) any_sides = true;
+    }
+    if (!any_sides) return;  // sides never announced
 
     for (Round& r : match_->rounds) {
       // An explicit round_end is authoritative; only fill in the gaps.
       if (r.winner == kTeamT || r.winner == kTeamCT) continue;
 
-      // Before the swap, each roster was playing the other side.
-      const bool swapped = first_team_round_ > 1 && r.number < first_team_round_;
-      const int ct_roster = swapped ? 1 : 0;
-      const int t_roster = swapped ? 0 : 1;
-
-      int losses[2] = {0, 0};
+      // How many played each side this round, and how many of them died.
+      int roster_ct = 0, roster_t = 0;
+      for (std::size_t i = 0; i < match_->players.size(); ++i) {
+        if (match_->players[i].hltv) continue;
+        const int side = SideInRound(static_cast<int>(i), r);
+        if (side == kTeamCT) ++roster_ct;
+        if (side == kTeamT) ++roster_t;
+      }
+      if (roster_ct == 0 || roster_t == 0) continue;
+      int lost_ct = 0, lost_t = 0;
       for (const Kill& k : r.kills) {
-        if (k.victim < 0) continue;
-        const int team = match_->players[static_cast<std::size_t>(k.victim)].team;
-        if (team == kTeamCT) ++losses[0];
-        else if (team == kTeamT) ++losses[1];
+        if (k.victim_team == kTeamCT) ++lost_ct;
+        if (k.victim_team == kTeamT) ++lost_t;
       }
 
-      int winner = -1;
       if (r.bomb_exploded) {
-        winner = t_roster;
+        r.winner = kTeamT;
         r.reason = kReasonTargetBombed;
         r.reason_text = "Target bombed";
       } else if (r.bomb_defused) {
-        winner = ct_roster;
+        r.winner = kTeamCT;
         r.reason = kReasonBombDefused;
         r.reason_text = "Bomb defused";
-      } else if (losses[0] >= roster[0]) {
-        winner = 1;
-        r.reason = ct_roster == 0 ? kReasonTWin : kReasonCTWin;
+      } else if (lost_ct >= roster_ct) {
+        r.winner = kTeamT;
+        r.reason = kReasonTWin;
         r.reason_text = "Opponents eliminated";
-      } else if (losses[1] >= roster[1]) {
-        winner = 0;
-        r.reason = ct_roster == 1 ? kReasonTWin : kReasonCTWin;
+      } else if (lost_t >= roster_t) {
+        r.winner = kTeamCT;
+        r.reason = kReasonCTWin;
         r.reason_text = "Opponents eliminated";
       } else {
         // Nobody was wiped and the bomb never went off: the clock ran out and
         // the CTs kept the site.
-        winner = ct_roster;
+        r.winner = kTeamCT;
         r.reason = kReasonTargetSaved;
         r.reason_text = "Time expired";
       }
-
-      r.winner = winner == 0 ? kTeamCT : kTeamT;
       r.winner_inferred = true;
       r.reason_text += " (inferred)";
     }
@@ -762,6 +821,7 @@ class MatchParser {
     if (match_started_) return;
     match_started_ = true;
     match_->rounds.clear();
+    round_sides_.clear();
     match_->score_t = 0;
     match_->score_ct = 0;
     for (Player& p : match_->players) {
@@ -814,6 +874,12 @@ class MatchParser {
       if (!p.hltv && p.team != kTeamSpectator) p.rounds_played++;
     }
 
+    // The sides as announced so far, for this round. Sides only change at a
+    // swap, which the game announces before the round's first kill.
+    std::vector<int> sides;
+    for (const Player& p : match_->players) sides.push_back(p.team);
+    round_sides_.push_back(std::move(sides));
+
     match_->rounds.push_back(current_);
     current_ = Round();
   }
@@ -830,13 +896,29 @@ class MatchParser {
 
     // Settle the rounds the demo never announced, then tally the score.
     ResolveRounds();
+
+    // The score is per team, the way the game shows it, not per side: the
+    // team that finished on T also won its first half rounds as CT. A round
+    // is credited to the T team when the winning side is the one that team
+    // was playing that round, which a player who finished on T can tell.
+    int t_player = -1;
+    for (std::size_t i = 0; i < match_->players.size(); ++i) {
+      if (!match_->players[i].hltv && match_->players[i].team == kTeamT) {
+        t_player = static_cast<int>(i);
+        break;
+      }
+    }
     match_->score_t = 0;
     match_->score_ct = 0;
     for (Round& r : match_->rounds) {
-      if (r.winner == kTeamT) {
-        match_->score_t++;
-      } else if (r.winner == kTeamCT) {
-        match_->score_ct++;
+      if (r.winner == kTeamT || r.winner == kTeamCT) {
+        int t_side = t_player >= 0 ? SideInRound(t_player, r) : kTeamUnknown;
+        if (t_side != kTeamT && t_side != kTeamCT) t_side = kTeamT;
+        if (r.winner == t_side) {
+          match_->score_t++;
+        } else {
+          match_->score_ct++;
+        }
       }
       r.score_t = match_->score_t;
       r.score_ct = match_->score_ct;
@@ -858,9 +940,9 @@ class MatchParser {
       if (first_team_round_ > 1) {
         note += " Sides were first announced at round " +
                 std::to_string(first_team_round_) +
-                ", taken as the halftime swap: rounds 1-" +
+                ", taken as the halftime swap: in rounds 1-" +
                 std::to_string(first_team_round_ - 1) +
-                " are scored with the sides reversed.";
+                " each team is taken to have played the other side.";
       }
       Warn(note);
     }
@@ -1023,6 +1105,11 @@ class MatchParser {
   // Round number at which player_team first fired. In retail demos that is the
   // halftime swap, which is what makes the first half reconstructable.
   int first_team_round_ = -1;
+  // Per player, the side first announced for them; per round, the announced
+  // side of every player when the round ended (kTeamUnknown before the first
+  // announcement).
+  std::vector<int> first_side_;
+  std::vector<std::vector<int>> round_sides_;
   long long resolve_attempts_ = 0;
   long long resolve_failures_ = 0;
 };

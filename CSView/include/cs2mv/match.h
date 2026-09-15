@@ -94,7 +94,10 @@ struct Round {
   // round_end entirely - the authoritative score lives in entity state, which
   // this parser does not decode.
   bool winner_inferred = false;
-  int score_t = 0;            // running score after this round
+  // Running score after this round, per team the way the game shows it: the
+  // T score belongs to the team that finished the match on T, including the
+  // rounds it won as CT before the halftime swap. `winner` is the side.
+  int score_t = 0;
   int score_ct = 0;
   bool bomb_planted = false;
   bool bomb_defused = false;

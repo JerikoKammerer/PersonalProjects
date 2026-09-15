@@ -402,10 +402,20 @@ suggests, and each is worth knowing before trusting a number:
   roster plays, not who is on it, so once every player has a side the first
   half can be reconstructed by playing the swap backwards.
 
-`Round::winner` therefore names a team the way the scoreboard groups them - by
-the side they *finished* on - not the side they were playing that round. That
-is what a match score means. Round reasons are worded without naming a side
-("Opponents eliminated", "Target bombed") so they stay true in both halves.
+Every player therefore has a side *per round*: the announced one once there
+is an announcement, and before that the opposite of the side they were first
+announced on. Each kill carries the sides of its round (`attackerTeam`,
+`victimTeam`), which is what the kill feeds colour by - a player who finished
+on CT shows in orange in round 3, because that is the side they were playing.
+`Round::winner` is likewise the side that won the round, and the round chips
+in the timeline are coloured by it.
+
+The match score is per team, the way the game shows it: the T score belongs
+to the team that finished on T, including the rounds it won as CT before the
+swap. Checked against the game's own team entities, which carry the score
+split by half: in one match the team that finished on T had 7 first half
+rounds (played as CT) and 6 second half rounds, and the parser's per-round
+sides credit exactly those.
 
 Validated end to end: three retail matches resolve every round, two of them
 finishing on exactly 13 - which is what a first-to-13 match does - and all
