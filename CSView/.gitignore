@@ -1,0 +1,9 @@
+build/
+cmake-build-*/
+*.dem
+!tests/data/synthetic.dem
+*.dem.bz2
+!tests/data/synthetic.dem.bz2
+tests/data/test_index.txt
+tests/data/empty_cache/
+node_modules/
