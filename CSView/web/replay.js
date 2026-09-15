@@ -39,15 +39,17 @@ const ReplayView = (() => {
   // against where the players actually walked (see fitRadar), which also
   // handles an image that is a crop, a thumbnail, or has no numbers at all.
   const RADARS = {
-    de_ancient: { file: 'de_ancient.jpg' },
+    // A crop with no overview numbers; these were fitted from a match.
+    de_ancient: { file: 'de_ancient.jpg', posX: -2477, posY: 1933, scale: 3.94 },
     de_anubis: { file: 'de_anubis.jpg', posX: -2796, posY: 3328, scale: 5.22 },
     de_cache: { file: 'de_cache.jpg', posX: -2000, posY: 3250, scale: 5.5 },
     de_dust2: { file: 'de_dust2.jpg', posX: -2476, posY: 3239, scale: 4.4 },
     de_inferno: { file: 'de_inferno.jpg', posX: -2087, posY: 3870, scale: 4.9 },
     de_mirage: { file: 'de_mirage.jpg', posX: -3230, posY: 1713, scale: 5.0 },
-    // The in-game overview with its grid, upper level only; the lower level
-    // is drawn as an inset that is not placed yet.
-    de_nuke: { file: 'de_nuke.jpg', ignore: [0.05, 0.05, 0.4, 0.55] },
+    // Upper floor only, cropped to the drawing. Anything below `lowerBelow`
+    // is the floor beneath, which the drawing does not show: it is left out
+    // of the fit, and players down there are drawn hollow with a marker.
+    de_nuke: { file: 'de_nuke.jpg', lowerBelow: -495 },
   };
   const MIN_FIT = 0.9;  // share of walked cells that must land on the drawing
 
@@ -57,7 +59,7 @@ const ReplayView = (() => {
     round: null,        // the selected round from the match payload
     replay: null,       // /api/replay payload for that round
     map: null,          // Image of /api/replay/map: where players walked
-    walked: null,       // the same, unblurred: one opaque pixel per walked cell
+    radarEntry: null,   // the RADARS entry in use, for what it says about floors
     mapTarget: null,
     radar: null,        // Image of the map's radar, once it is placed
     radarFit: null,     // {posX, posY, s (units per pixel), score}
@@ -125,31 +127,25 @@ const ReplayView = (() => {
   function loadMap(target) {
     state.radar = null;
     state.radarFit = null;
+    state.radarEntry = null;
     state.radarNote = '';
     state.radarTried = false;
-    state.walked = null;
     const image = new Image();
     image.onload = () => {
       if (state.mapTarget !== target) return;
       state.map = image;
       draw();
-      placeRadar(target);
     };
     image.src = `/api/replay/map?code=${encodeURIComponent(target)}`;
-    const walked = new Image();
-    walked.onload = () => {
-      if (state.mapTarget !== target) return;
-      state.walked = walked;
-      placeRadar(target);
-    };
-    walked.src = `/api/replay/map?code=${encodeURIComponent(target)}&raw=1`;
   }
 
   // Loads the radar image for the current map, if there is one, and works
-  // out where it sits in the world from the walked-area image.
+  // out where it sits in the world from the walked footprint. The footprint
+  // is asked for here rather than with the map, because a drawing of one
+  // floor of a two-floor map must only be fitted to that floor.
   function placeRadar(target) {
     const r = state.replay;
-    if (!r || !state.walked || state.radarTried) return;
+    if (!r || state.radarTried) return;
     state.radarTried = true;
     const entry = RADARS[r.map];
     if (!entry) {
@@ -157,26 +153,36 @@ const ReplayView = (() => {
       updateNote();
       return;
     }
-    const image = new Image();
-    image.onload = () => {
+    let footprint = `/api/replay/map?code=${encodeURIComponent(target)}&raw=1`;
+    if (entry.lowerBelow !== undefined) footprint += `&zmin=${entry.lowerBelow}`;
+    const walked = new Image();
+    walked.onload = () => {
       if (state.mapTarget !== target) return;
-      const fit = fitRadar(image, entry, state.walked, r);
-      state.lastFit = fit;
-      if (fit && fit.score >= MIN_FIT) {
-        state.radar = keyOutBackground(image);
-        state.radarFit = fit;
-        state.radarNote = `radar placed from play (${Math.round(fit.score * 100)}% of walked ground on the drawing)`;
-        console.log(`radar fit for ${r.map}: posX=${fit.posX.toFixed(1)} posY=${fit.posY.toFixed(1)} ` +
-                    `scale@1024=${(fit.s * image.width / 1024).toFixed(4)} score=${fit.score.toFixed(4)}`);
-      } else {
-        state.radarNote = 'the radar image could not be matched to this match; showing where players walked';
-      }
-      updateNote();
-      resize();
-      draw();
+      const image = new Image();
+      image.onload = () => fitAndPlace(target, image, entry, walked, r);
+      image.onerror = () => { state.radarNote = 'radar image missing'; updateNote(); };
+      image.src = `/maps/${entry.file}`;
     };
-    image.onerror = () => { state.radarNote = 'radar image missing'; updateNote(); };
-    image.src = `/maps/${entry.file}`;
+    walked.src = footprint;
+  }
+
+  function fitAndPlace(target, image, entry, walked, r) {
+    if (state.mapTarget !== target) return;
+    const fit = fitRadar(image, entry, walked, r);
+    state.lastFit = fit;
+    if (fit && fit.score >= MIN_FIT) {
+      state.radar = keyOutBackground(image);
+      state.radarFit = fit;
+      state.radarEntry = entry;
+      state.radarNote = `radar placed from play (${Math.round(fit.score * 100)}% of walked ground on the drawing)`;
+      console.log(`radar fit for ${r.map}: posX=${fit.posX.toFixed(1)} posY=${fit.posY.toFixed(1)} ` +
+                  `scale@1024=${(fit.s * image.width / 1024).toFixed(4)} score=${fit.score.toFixed(4)}`);
+    } else {
+      state.radarNote = 'the radar image could not be matched to this match; showing where players walked';
+    }
+    updateNote();
+    resize();
+    draw();
   }
 
   function updateNote() {
@@ -616,7 +622,9 @@ const ReplayView = (() => {
       const y = T.y(s[2] + (n[2] - s[2]) * t);
       const yaw = lerpAngle(s[4], n[4], t);
       const player = r.players[s[0]];
-      drawPlayer(ctx, T, x, y, yaw, s, alive, player ? player.name : '');
+      const below = state.radarEntry && state.radarEntry.lowerBelow !== undefined &&
+                    s[3] < state.radarEntry.lowerBelow;
+      drawPlayer(ctx, T, x, y, yaw, s, alive, player ? player.name : '', below);
     }
 
     // Clock and slider.
@@ -644,11 +652,41 @@ const ReplayView = (() => {
     ctx.stroke();
   }
 
-  function drawPlayer(ctx, T, x, y, yaw, s, alive, name) {
+  function drawPlayer(ctx, T, x, y, yaw, s, alive, name, below) {
     const team = s[7];
     const radius = T.px(7);
     if (!alive) {
       drawCross(ctx, x, y, T.px(5), teamColor(team, 0.6));
+      return;
+    }
+    if (below) {
+      // On the floor beneath the one drawn: a hollow body, a "down" mark
+      // above it, and no view cone, so it cannot be mistaken for someone
+      // standing on the drawing.
+      const rad = yaw * Math.PI / 180;
+      const dx = Math.cos(rad), dy = -Math.sin(rad);
+      ctx.fillStyle = 'rgba(13, 16, 22, 0.7)';
+      ctx.strokeStyle = teamColor(team, 0.95);
+      ctx.lineWidth = T.px(2);
+      ctx.setLineDash([T.px(3), T.px(2)]);
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(x + dx * radius * 0.4, y + dy * radius * 0.4);
+      ctx.lineTo(x + dx * radius * 1.7, y + dy * radius * 1.7);
+      ctx.stroke();
+      ctx.fillStyle = teamColor(team, 0.95);
+      ctx.font = `bold ${T.px(9)}px system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('\u25BC', x, y - radius - T.px(6));
+      ctx.fillStyle = 'rgba(230, 233, 239, 0.75)';
+      ctx.font = `${T.px(10)}px system-ui, sans-serif`;
+      ctx.textAlign = 'left';
+      ctx.fillText(name, x + radius + T.px(6), y);
       return;
     }
     // View direction: Source yaw is counter-clockwise from +x, and the

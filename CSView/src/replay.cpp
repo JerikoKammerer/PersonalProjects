@@ -166,7 +166,7 @@ class Builder {
           if (w != decoder.entities().end()) s.weapon = WeaponIndex(w->second.class_name);
         }
         if (alive) {
-          Visit(s.x, s.y);
+          Visit(s.x, s.y, s.z);
           const int zone = IntOf(e, "m_nWhichBombZone");
           if (zone > 0) NoteBombZone(s.x, s.y, s.z, zone);
         }
@@ -312,7 +312,7 @@ class Builder {
       InitGrid();
       for (const ReplayFrame& frame : out_->frames) {
         for (const PlayerSample& s : frame.players) {
-          if (s.flags & kPlayerAlive) Visit(s.x, s.y);
+          if (s.flags & kPlayerAlive) Visit(s.x, s.y, s.z);
         }
       }
     }
@@ -358,9 +358,10 @@ class Builder {
     if (out_->grid_w < 1) out_->grid_w = 1;
     if (out_->grid_h < 1) out_->grid_h = 1;
     out_->visits.assign(static_cast<std::size_t>(out_->grid_w) * out_->grid_h, 0);
+    out_->visit_top.assign(out_->visits.size(), -1e30f);
   }
 
-  void Visit(float x, float y) {
+  void Visit(float x, float y, float z) {
     seen_min_[0] = std::min(seen_min_[0], x);
     seen_min_[1] = std::min(seen_min_[1], y);
     seen_max_[0] = std::max(seen_max_[0], x);
@@ -369,8 +370,9 @@ class Builder {
     const int gx = static_cast<int>((x - out_->bounds_min[0]) / out_->grid_cell);
     const int gy = static_cast<int>((y - out_->bounds_min[1]) / out_->grid_cell);
     if (gx < 0 || gy < 0 || gx >= out_->grid_w || gy >= out_->grid_h) return;
-    std::uint16_t& cell = out_->visits[static_cast<std::size_t>(gy) * out_->grid_w + gx];
-    if (cell < 0xFFFF) ++cell;
+    const std::size_t at = static_cast<std::size_t>(gy) * out_->grid_w + gx;
+    if (out_->visits[at] < 0xFFFF) ++out_->visits[at];
+    out_->visit_top[at] = std::max(out_->visit_top[at], z);
   }
 
   void NoteBombZone(float x, float y, float z, int zone) {
@@ -555,7 +557,7 @@ std::string ReplayToJson(const Replay& replay, int from_tick, int to_tick) {
   return w.str();
 }
 
-std::string ReplayWalkedPng(const Replay& replay) {
+std::string ReplayWalkedPng(const Replay& replay, float z_min) {
   const int w = replay.grid_w;
   const int h = replay.grid_h;
   if (w <= 0 || h <= 0 || replay.visits.empty()) return std::string();
@@ -563,7 +565,9 @@ std::string ReplayWalkedPng(const Replay& replay) {
   for (int y = 0; y < h; ++y) {
     for (int x = 0; x < w; ++x) {
       // World y grows upwards; image rows grow downwards.
-      if (replay.visits[static_cast<std::size_t>(h - 1 - y) * w + x] == 0) continue;
+      const std::size_t at = static_cast<std::size_t>(h - 1 - y) * w + x;
+      if (replay.visits[at] == 0) continue;
+      if (at < replay.visit_top.size() && replay.visit_top[at] < z_min) continue;
       std::uint8_t* px = &pixels[(static_cast<std::size_t>(y) * w + x) * 4];
       px[0] = px[1] = px[2] = 255;
       px[3] = 255;

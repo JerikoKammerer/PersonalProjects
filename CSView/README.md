@@ -297,9 +297,10 @@ known and from the walked area's extent where they are not, and only uses the
 drawing when that fit covers at least 90% of the walked ground (the official
 drawings reach 99.6% and better). So a cropped or thumbnail-sized image works
 too, and a drawing that does not match the match falls back to the walked
-area. The placement is logged to the browser console. Nuke's image is the
-in-game overview, which draws the lower level as an inset; that inset is not
-placed yet, so Nuke currently falls back to the walked area.
+area. The placement is logged to the browser console. Nuke's drawing shows
+the upper floor only, so the fit uses only footsteps above the lower floor
+(`&zmin=` on the footprint), and a player down there is drawn hollow with a
+mark over them rather than as if they stood on the drawing.
 
 `cs2mv replay <demo> [frames.json] [map.png]` builds the same thing from the
 command line. A match is about 30,000 frames and 20 MB of JSON; the server

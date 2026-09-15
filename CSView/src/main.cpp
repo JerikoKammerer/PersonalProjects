@@ -864,8 +864,16 @@ int CommandServe(const Options& options) {
       return;
     }
     response->content_type = "image/png";
-    response->body = request.Param("raw").empty() ? ReplayMapPng(*replay)
-                                                  : ReplayWalkedPng(*replay);
+    if (request.Param("raw").empty()) {
+      response->body = ReplayMapPng(*replay);
+    } else {
+      // ?zmin=<z> keeps only ground someone stood on at or above that
+      // height: a drawing of Nuke's upper floor should not be fitted to
+      // footsteps on the floor below it.
+      const std::string z_min = request.Param("zmin");
+      response->body = ReplayWalkedPng(
+          *replay, z_min.empty() ? -1e30f : static_cast<float>(std::atof(z_min.c_str())));
+    }
   });
 
   // --- Steam sign-in, for the game coordinator helper.

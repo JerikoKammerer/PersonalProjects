@@ -114,6 +114,10 @@ struct Replay {
   float grid_cell = 16.0f;
   int grid_w = 0, grid_h = 0;
   std::vector<std::uint16_t> visits;
+  // The highest point anyone stood at in each cell, so that a map with a
+  // floor beneath another (Nuke) can be fitted to a drawing of its upper
+  // level alone.
+  std::vector<float> visit_top;
 };
 
 // Runs the entity decoder over the whole demo. The reader must be positioned
@@ -133,8 +137,9 @@ std::string ReplayMapPng(const Replay& replay);
 
 // The same grid with no blurring: a cell is opaque if anyone stood in it,
 // transparent otherwise. The exact footprint, for lining a drawing of the
-// map up with the world.
-std::string ReplayWalkedPng(const Replay& replay);
+// map up with the world. Cells nobody stood in above `z_min` are left out,
+// which drops a lower floor when the drawing only shows the upper one.
+std::string ReplayWalkedPng(const Replay& replay, float z_min = -1e30f);
 
 }  // namespace cs2mv
 
