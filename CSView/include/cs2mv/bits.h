@@ -88,6 +88,29 @@ class BitReader {
     return static_cast<std::int32_t>((v >> 1) ^ (~(v & 1) + 1));
   }
 
+  // The 64 bit forms. A steam id or a 64 bit mask needs up to ten bytes, and
+  // reading it with the 32 bit reader would stop short and desynchronise.
+  std::uint64_t ReadVarUInt64() {
+    std::uint64_t result = 0;
+    for (int shift = 0; shift < 70; shift += 7) {
+      const std::uint32_t b = ReadBits(8);
+      if (!ok_) return 0;
+      result |= static_cast<std::uint64_t>(b & 0x7F) << shift;
+      if ((b & 0x80) == 0) return result;
+    }
+    Fail();
+    return 0;
+  }
+  std::int64_t ReadVarInt64() {
+    const std::uint64_t v = ReadVarUInt64();
+    return static_cast<std::int64_t>((v >> 1) ^ (~(v & 1) + 1));
+  }
+
+  // Bits consumed so far; the position to report when something goes wrong.
+  std::size_t BitsConsumed() const {
+    return pos_ * 8 - static_cast<std::size_t>(avail_);
+  }
+
   // "ubitvarfp", the small-integer encoding field paths use. A cascade of
   // selector bits picks the width: 2, then 4, then 10, then 17, else 31.
   std::uint32_t ReadUBitVarFieldPath() {

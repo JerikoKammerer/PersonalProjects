@@ -51,6 +51,7 @@ set_target_properties(cs2mv_cli PROPERTIES OUTPUT_NAME cs2mv)
 
 add_executable(cs2mv_tests
   tests/test_main.cpp
+  tests/test_bits.cpp
   tests/test_codecs.cpp
   tests/test_demo.cpp
   tests/test_fieldpath.cpp

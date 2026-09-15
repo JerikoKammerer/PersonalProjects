@@ -20,10 +20,13 @@ const std::string& Symbol(const SerializerSet& set, int index) {
   return set.symbols[static_cast<std::size_t>(index)];
 }
 
-// ProtoFlattenedSerializerField_t
+// ProtoFlattenedSerializerField_t. Field 11 is the list of polymorphic
+// types { serializer_name_sym = 1, version = 2 }; field 12 names the
+// serialiser the variable itself uses ("ehandle", "cellx").
 void ParseField(const pb::Slice& body, FieldInfo* out, int* type_sym,
                 int* name_sym, int* node_sym, int* encoder_sym,
-                int* serializer_sym) {
+                int* serializer_sym, std::vector<int>* polymorphic_syms,
+                int* var_serializer_sym) {
   pb::Reader r(body);
   std::uint32_t field = 0;
   while (r.NextField(&field)) {
@@ -38,6 +41,21 @@ void ParseField(const pb::Slice& body, FieldInfo* out, int* type_sym,
       case 8: out->field_serializer_version = r.ReadInt32(); break;
       case 9: *node_sym = r.ReadInt32(); break;
       case 10: *encoder_sym = r.ReadInt32(); break;
+      case 12: *var_serializer_sym = r.ReadInt32(); break;
+      case 11: {
+        if (r.wire_type() != pb::kLengthDelimited) break;
+        pb::Reader p(r.ReadBytes());
+        int sym = -1;
+        FieldInfo::Polymorphic type;
+        std::uint32_t pf = 0;
+        while (p.NextField(&pf)) {
+          if (pf == 1) sym = p.ReadInt32();
+          if (pf == 2) type.version = p.ReadInt32();
+        }
+        polymorphic_syms->push_back(sym);
+        out->polymorphic_types.push_back(type);
+        break;
+      }
       default: break;
     }
   }
@@ -87,14 +105,19 @@ bool ParseSendTables(const std::string& body, SerializerSet* out,
   for (const pb::Slice& f : field_bodies) {
     FieldInfo info;
     int type_sym = -1, name_sym = -1, node_sym = -1, encoder_sym = -1;
-    int serializer_sym = -1;
+    int serializer_sym = -1, var_serializer_sym = -1;
+    std::vector<int> polymorphic_syms;
     ParseField(f, &info, &type_sym, &name_sym, &node_sym, &encoder_sym,
-               &serializer_sym);
+               &serializer_sym, &polymorphic_syms, &var_serializer_sym);
+    info.var_serializer = Symbol(*out, var_serializer_sym);
     info.var_type = Symbol(*out, type_sym);
     info.var_name = Symbol(*out, name_sym);
     info.send_node = Symbol(*out, node_sym);
     info.encoder = Symbol(*out, encoder_sym);
     info.field_serializer_name = Symbol(*out, serializer_sym);
+    for (std::size_t i = 0; i < polymorphic_syms.size(); ++i) {
+      info.polymorphic_types[i].serializer_name = Symbol(*out, polymorphic_syms[i]);
+    }
     out->fields.push_back(std::move(info));
   }
 
@@ -129,6 +152,8 @@ bool ParseSendTables(const std::string& body, SerializerSet* out,
     serializer.name = Symbol(*out, name_sym);
     if (serializer.name.empty()) continue;
     out->by_name[serializer.name] = static_cast<int>(out->serializers.size());
+    out->by_name_version[std::make_pair(serializer.name, serializer.version)] =
+        static_cast<int>(out->serializers.size());
     out->serializers.push_back(std::move(serializer));
   }
 

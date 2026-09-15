@@ -1,9 +1,9 @@
 #include "cs2mv/entities.h"
 
 #include <cmath>
-#include <cstring>
-
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 #include "cs2mv/protobuf.h"
 
@@ -17,6 +17,14 @@ bool Err(std::string* error, const std::string& msg) {
 
 bool StartsWith(const std::string& s, const char* prefix) {
   return s.rfind(prefix, 0) == 0;
+}
+
+std::string Trim(const std::string& s) {
+  std::size_t a = 0;
+  std::size_t b = s.size();
+  while (a < b && (s[a] == ' ' || s[a] == '\t')) ++a;
+  while (b > a && (s[b - 1] == ' ' || s[b - 1] == '\t')) --b;
+  return s.substr(a, b - a);
 }
 
 // Quantisation flags, from the field's encode_flags.
@@ -42,11 +50,18 @@ float ReadCoord(BitReader* bits) {
   return negative ? -value : value;
 }
 
+// A component of a unit vector: a sign and eleven bits of magnitude.
 float ReadNormal(BitReader* bits) {
   const bool negative = bits->ReadBit();
   const std::uint32_t raw = bits->ReadBits(11);
   float value = static_cast<float>(raw) * (1.0f / ((1 << 11) - 1));
   return negative ? -value : value;
+}
+
+// An angle packed into `count` bits over a full turn.
+float ReadAngle(BitReader* bits, int count) {
+  const double raw = static_cast<double>(bits->ReadBits(count));
+  return static_cast<float>(raw * 360.0 / static_cast<double>(1ull << count));
 }
 
 float BitsToFloat(std::uint32_t raw) {
@@ -55,11 +70,145 @@ float BitsToFloat(std::uint32_t raw) {
   return f;
 }
 
+// Struct-valued fields that stand for one struct rather than an array of
+// them. Most are spelled with a pointer in the schema; these are not, and are
+// known by name instead.
+bool IsPointerType(const std::string& base) {
+  static const char* const kNames[] = {
+      "CBodyComponent",     "CLightComponent",   "CPhysicsComponent",
+      "CRenderComponent",   "CEntityIdentity",   "PhysicsRagdollPose_t",
+      "CPlayerLocalData",   "CPlayer_CameraServices",
+  };
+  for (const char* name : kNames) {
+    if (base == name) return true;
+  }
+  return false;
+}
+
+bool IsVectorType(const std::string& base) {
+  return base == "CUtlVector" || base == "CNetworkUtlVectorBase" ||
+         base == "CUtlVectorEmbeddedNetworkVar";
+}
+
 }  // namespace
 
-FieldDecoder::FieldDecoder(const FieldInfo& info) {
-  const std::string& type = info.var_type;
+TypeSpec ParseTypeSpec(const std::string& type) {
+  TypeSpec spec;
+  std::string s = Trim(type);
+  if (!s.empty() && s.back() == ']') {
+    const std::size_t open = s.rfind('[');
+    if (open != std::string::npos) {
+      spec.count = std::atoi(s.c_str() + open + 1);
+      s = Trim(s.substr(0, open));
+    }
+  }
+  if (!s.empty() && s.back() == '*') {
+    spec.pointer = true;
+    s = Trim(s.substr(0, s.size() - 1));
+  }
+  const std::size_t lt = s.find('<');
+  if (lt != std::string::npos) {
+    const std::size_t gt = s.rfind('>');
+    if (gt != std::string::npos && gt > lt) {
+      spec.generic = Trim(s.substr(lt + 1, gt - lt - 1));
+    }
+    s = Trim(s.substr(0, lt));
+  }
+  spec.base = s;
+  return spec;
+}
 
+// ------------------------------------------------------------- field decoder
+
+FieldDecoder FieldDecoder::Bool() {
+  FieldDecoder d;
+  d.kind_ = kBool;
+  d.description_ = "bool";
+  return d;
+}
+
+FieldDecoder FieldDecoder::VarUInt() {
+  FieldDecoder d;
+  d.kind_ = kVarUInt32;
+  d.description_ = "count";
+  return d;
+}
+
+FieldDecoder FieldDecoder::Polymorphic() {
+  FieldDecoder d;
+  d.kind_ = kPolymorphic;
+  d.description_ = "polymorphic";
+  return d;
+}
+
+FieldDecoder::FieldDecoder(const std::string& type, const FieldInfo& info) {
+  description_ = type;
+  if (!info.encoder.empty()) description_ += " " + info.encoder;
+
+  if (type == "bool") {
+    kind_ = kBool;
+  } else if (type == "CUtlString" || type == "CUtlSymbolLarge" ||
+             type == "CGlobalSymbol" || type == "char") {
+    kind_ = kString;
+  } else if (info.encoder == "fixed64") {
+    // Sixty four literal bits rather than a varint.
+    kind_ = kFixed64;
+  } else if (type == "int64") {
+    kind_ = kVarInt64;
+  } else if (type == "HSequence") {
+    kind_ = kSequence;
+  } else if (type == "int8" || type == "int16" || type == "int32") {
+    kind_ = kVarInt32;
+  } else if (type == "float32" || type == "GameTime_t" ||
+             type == "CNetworkedQuantizedFloat") {
+    kind_ = kFloats;
+    components_ = 1;
+    InitFloat(info);
+  } else if (type == "Vector" || type == "VectorWS") {
+    if (info.encoder == "normal") {
+      kind_ = kVectorNormal;
+    } else {
+      kind_ = kFloats;
+      components_ = 3;
+      InitFloat(info);
+    }
+  } else if (type == "Vector2D") {
+    kind_ = kFloats;
+    components_ = 2;
+    InitFloat(info);
+  } else if (type == "Vector4D" || type == "Quaternion") {
+    kind_ = kFloats;
+    components_ = 4;
+    InitFloat(info);
+  } else if (type == "QAngle") {
+    kind_ = kQAngle;
+    bits_ = info.bit_count;
+    if (info.encoder == "qangle_pitch_yaw") {
+      qangle_ = kQAnglePitchYaw;
+    } else if (info.encoder == "qangle_precise") {
+      qangle_ = kQAnglePrecise;
+    } else if (info.bit_count != 0) {
+      qangle_ = kQAngleFixedBits;
+    } else {
+      qangle_ = kQAngleCoord;
+    }
+  } else if (type == "CUtlBinaryBlock") {
+    kind_ = kBlob;
+  } else if (type == "CTransform") {
+    // Its bit layout is not established. Reading it wrong would be worse
+    // than refusing, because the refusal at least says where it happened.
+    kind_ = kUnsupported;
+  } else {
+    // Everything else - integers, enums, handles, tokens, colours, ticks,
+    // resource ids - is an unsigned varint. Some of those are 64 bits wide
+    // (a ResourceId_t is a hash, a uint64 a mask) and nothing in the schema
+    // says which, so every one is read as 64 bits: a value that fits in 32
+    // decodes identically, and one that does not no longer desynchronises.
+    kind_ = kVarUInt64;
+  }
+}
+
+void FieldDecoder::InitFloat(const FieldInfo& info) {
   // Two fields lie about themselves. The schema declares them as plain
   // float32 with no encoder, but the game always writes them as simulation
   // time, and reading them as raw floats desynchronises the stream on the
@@ -69,139 +218,93 @@ FieldDecoder::FieldDecoder(const FieldInfo& info) {
     encoder = "simtime";
   }
 
-  // Strings first: they are the only variable length values here.
-  if (type == "CUtlString" || type == "CUtlSymbolLarge" ||
-      type == "CGlobalSymbol" || StartsWith(type, "char[")) {
-    kind_ = kString;
+  if (encoder == "coord") {
+    float_ = kCoord;
+    return;
+  }
+  if (encoder == "simtime" || encoder == "runetime") {
+    float_ = kSimulationTime;
+    return;
+  }
+  if (encoder == "normal") {
+    float_ = kNormal;
+    return;
+  }
+  if (info.bit_count <= 0 || info.bit_count >= 32) {
+    float_ = kNoScale;
     return;
   }
 
-  if (type == "bool") {
-    kind_ = kBool;
-    return;
-  }
+  float_ = kQuantized;
+  bits_ = info.bit_count;
+  flags_ = info.encode_flags;
+  float low = info.low;
+  float high = info.high;
+  // A range the schema leaves out is the unit interval.
+  if (low == 0.0f && high == 0.0f) high = 1.0f;
 
-  // 64 bit values. A "fixed64" encoder means the bits are literal, not varint.
-  if (type == "uint64" || StartsWith(type, "CStrongHandle")) {
-    kind_ = (encoder == "fixed64") ? kFixed64 : kVarUInt;
-    return;
-  }
-  if (type == "int64") {
-    kind_ = kVarInt;
-    return;
-  }
+  // Flags that cannot apply to this range are dropped, so that the bit budget
+  // below is right. Integer encoding overrides the rounding flags outright.
+  //
+  // What the rounding flags do was settled against real baselines, not taken
+  // from a description: they only shift the range so that the low (or high)
+  // end is exactly representable, and spend no bit of their own. Zero gets a
+  // presence bit, except when a rounding flag is also set - a view offset
+  // declared [-64,64] with EncodeZero carries the bit, a playback rate
+  // declared [-4,12] with RoundDown|EncodeZero does not.
+  if ((flags_ & kRoundDown) && (flags_ & kRoundUp)) flags_ &= ~(kRoundDown | kRoundUp);
+  if (low == 0.0f && (flags_ & kRoundDown)) flags_ &= ~kRoundDown;
+  if (high == 0.0f && (flags_ & kRoundUp)) flags_ &= ~kRoundUp;
+  if (low > 0.0f || high < 0.0f) flags_ &= ~kEncodeZero;
+  if (flags_ & (kRoundDown | kRoundUp)) flags_ &= ~kEncodeZero;
+  if (flags_ & kEncodeIntegers) flags_ &= ~(kRoundUp | kRoundDown | kEncodeZero);
 
-  // Floats, and everything built out of them. A vector is several floats back
-  // to back: only the first is kept, but every component must still be read,
-  // because leaving 64 bits of a Vector on the wire desynchronises everything
-  // after it.
-  const bool is_float =
-      type == "float32" || type == "GameTime_t" ||
-      type == "CNetworkedQuantizedFloat" || type == "Vector" ||
-      type == "Vector2D" || type == "Vector4D" || type == "QAngle" ||
-      type == "Quaternion" || type == "CTransform";
-  if (is_float) {
-    if (encoder == "coord") {
-      kind_ = kFloatCoord;
-    } else if (encoder == "simtime" || encoder == "runetime") {
-      kind_ = kFloatSimulationTime;
-    } else if (encoder == "normal") {
-      kind_ = kNormal;
-    } else if (info.bit_count <= 0 || info.bit_count >= 32) {
-      kind_ = kFloatNoScale;
-    } else {
-      kind_ = kFloatQuantized;
+  int steps = 1 << bits_;
+  if (flags_ & kRoundDown) {
+    high -= (high - low) / static_cast<float>(steps);
+  } else if (flags_ & kRoundUp) {
+    low += (high - low) / static_cast<float>(steps);
+  }
+  if (flags_ & kEncodeIntegers) {
+    float delta = high - low;
+    if (delta < 1.0f) delta = 1.0f;
+    const int span = 1 << static_cast<int>(std::ceil(std::log2(delta)));
+    int bits = bits_;
+    while ((1 << bits) <= span) ++bits;
+    if (bits > bits_) {
+      bits_ = bits;
+      steps = 1 << bits_;
     }
-
-    if (type == "Vector" || type == "QAngle") {
-      components_ = 3;
-    } else if (type == "Vector2D") {
-      components_ = 2;
-    } else if (type == "Vector4D" || type == "Quaternion") {
-      components_ = 4;
-    }
-
-    bits_ = info.bit_count;
-    flags_ = info.encode_flags;
-    low_ = info.low;
-    high_ = info.high;
-    no_scale_ = (info.bit_count <= 0 || info.bit_count >= 32);
-
-    if (kind_ == kFloatQuantized) {
-      // Round up and round down each spend one step, and both being set is a
-      // contradiction. Flags that cannot apply to this range are dropped, so
-      // that the bit budget below is right.
-      if ((flags_ & kRoundDown) && (flags_ & kRoundUp)) flags_ &= ~kRoundUp;
-      if (low_ == 0.0f && (flags_ & kRoundDown)) flags_ &= ~kRoundDown;
-      if (high_ == 0.0f && (flags_ & kRoundUp)) flags_ &= ~kRoundUp;
-      if (low_ > 0.0f || high_ < 0.0f) flags_ &= ~kEncodeZero;
-
-      float low = low_;
-      float high = high_;
-      int bit_count = bits_;
-      float range = high - low;
-
-      if (flags_ & kEncodeIntegers) {
-        float delta = high - low;
-        if (delta < 1.0f) delta = 1.0f;
-        const float log2delta = std::ceil(std::log2(delta));
-        const float span = std::pow(2.0f, log2delta);
-        int needed = bit_count;
-        while ((1 << needed) < static_cast<int>(span)) ++needed;
-        if (needed > bit_count) bit_count = needed;
-        const float steps = static_cast<float>(1 << bit_count);
-        high = low + span - (span / steps);
-        range = high - low;
-      }
-
-      const int steps = 1 << bit_count;
-      if (flags_ & kRoundDown) {
-        high -= range / static_cast<float>(steps);
-      } else if (flags_ & kRoundUp) {
-        low += range / static_cast<float>(steps);
-      }
-
-      bits_ = bit_count;
-      low_ = low;
-      high_ = high;
-      interval_ = (steps > 1) ? (high - low) / static_cast<float>(steps - 1) : 0.0f;
-    }
-    return;
+    high = low + static_cast<float>(span) - static_cast<float>(span) / static_cast<float>(steps);
   }
 
-  // Everything else - integers, enums, handles, tokens, resource ids - is a
-  // varint. Signed types are zigzagged.
-  if (type == "int8" || type == "int16" || type == "int32") {
-    kind_ = kVarInt;
-    return;
+  // EXPERIMENT: a [0,1] round-down float spends one bit fewer.
+  static const char* unit_rule = std::getenv("CS2MV_UNIT_RULE");
+  if (unit_rule != nullptr && (info.encode_flags & kRoundDown) && info.low == 0.0f &&
+      info.high == 1.0f) {
+    bits_ -= std::atoi(unit_rule);
+    steps = 1 << bits_;
   }
-  kind_ = kVarUInt;
+
+  low_ = low;
+  high_ = high;
+  interval_ = (steps > 1) ? (high - low) / static_cast<float>(steps - 1) : 0.0f;
 }
 
 float FieldDecoder::DecodeFloat(BitReader* bits) const {
-  switch (kind_) {
-    case kFloatCoord:
+  switch (float_) {
+    case kCoord:
       return ReadCoord(bits);
     case kNormal:
       return ReadNormal(bits);
-    case kFloatSimulationTime:
+    case kSimulationTime:
       return static_cast<float>(bits->ReadVarUInt32()) * (1.0f / 64.0f);
-    case kFloatNoScale:
-      return BitsToFloat(bits->ReadBits(32));
-    case kFloatQuantized: {
-      // The order of these checks is part of the format.
-      if (flags_ & kRoundDown) {
-        if (bits->ReadBit()) return low_;
-      }
-      if (flags_ & kRoundUp) {
-        if (bits->ReadBit()) return high_;
-      }
-      if (flags_ & kEncodeZero) {
-        if (bits->ReadBit()) return 0.0f;
-      }
+    case kQuantized: {
+      if ((flags_ & kEncodeZero) && bits->ReadBit()) return 0.0f;
       const std::uint32_t raw = bits->ReadBits(bits_);
       return low_ + static_cast<float>(raw) * interval_;
     }
+    case kNoScale:
     default:
       return BitsToFloat(bits->ReadBits(32));
   }
@@ -214,14 +317,31 @@ FieldValue FieldDecoder::Decode(BitReader* bits) const {
       value.kind = FieldValue::kUInt;
       value.u = bits->ReadBit() ? 1 : 0;
       break;
-    case kVarInt:
+    case kVarUInt32:
+      value.kind = FieldValue::kUInt;
+      value.u = bits->ReadVarUInt32();
+      break;
+    case kVarInt32:
+      // Read wide for the same reason as the unsigned case.
       value.kind = FieldValue::kInt;
-      value.i = bits->ReadVarInt32();
+      value.i = bits->ReadVarInt64();
+      break;
+    case kVarUInt64:
+      value.kind = FieldValue::kUInt;
+      value.u = bits->ReadVarUInt64();
+      break;
+    case kVarInt64:
+      value.kind = FieldValue::kInt;
+      value.i = bits->ReadVarInt64();
       break;
     case kFixed64:
       value.kind = FieldValue::kUInt;
       value.u = static_cast<std::uint64_t>(bits->ReadBits(32)) |
                 (static_cast<std::uint64_t>(bits->ReadBits(32)) << 32);
+      break;
+    case kSequence:
+      value.kind = FieldValue::kUInt;
+      value.u = bits->ReadVarUInt64() - 1;
       break;
     case kString: {
       // Null terminated, one byte at a time.
@@ -233,18 +353,86 @@ FieldValue FieldDecoder::Decode(BitReader* bits) const {
       }
       break;
     }
-    case kVarUInt:
-      value.kind = FieldValue::kUInt;
-      value.u = bits->ReadVarUInt32();
-      break;
-    default: {
+    case kFloats:
       value.kind = FieldValue::kFloat;
-      // Read every component; keep the first.
-      const float first = DecodeFloat(bits);
-      for (int i = 1; i < components_; ++i) DecodeFloat(bits);
-      value.f = first;
+      for (int i = 0; i < components_; ++i) value.v[i] = DecodeFloat(bits);
+      break;
+    case kVectorNormal: {
+      value.kind = FieldValue::kFloat;
+      const bool has_x = bits->ReadBit();
+      const bool has_y = bits->ReadBit();
+      const float x = has_x ? ReadNormal(bits) : 0.0f;
+      const float y = has_y ? ReadNormal(bits) : 0.0f;
+      const bool negative_z = bits->ReadBit();
+      const float sum = x * x + y * y;
+      float z = sum < 1.0f ? std::sqrt(1.0f - sum) : 0.0f;
+      if (negative_z) z = -z;
+      value.v[0] = x;
+      value.v[1] = y;
+      value.v[2] = z;
       break;
     }
+    case kQAngle: {
+      value.kind = FieldValue::kFloat;
+      switch (qangle_) {
+        case kQAnglePitchYaw:
+          value.v[0] = ReadAngle(bits, bits_);
+          value.v[1] = ReadAngle(bits, bits_);
+          break;
+        case kQAnglePrecise: {
+          const bool has_pitch = bits->ReadBit();
+          const bool has_yaw = bits->ReadBit();
+          const bool has_roll = bits->ReadBit();
+          if (has_pitch) value.v[0] = ReadAngle(bits, 20) - 180.0f;
+          if (has_yaw) value.v[1] = ReadAngle(bits, 20) - 180.0f;
+          if (has_roll) value.v[2] = ReadAngle(bits, 20) - 180.0f;
+          break;
+        }
+        case kQAngleFixedBits: {
+          // EXPERIMENT: override the width of 32 bit angles.
+          static const char* exp = std::getenv("CS2MV_QANGLE32_BITS");
+          if (exp != nullptr && bits_ == 32) {
+            int n = std::atoi(exp);
+            while (n > 0) { bits->ReadBits(n > 32 ? 32 : n); n -= 32; }
+            break;
+          }
+          for (int i = 0; i < 3; ++i) value.v[i] = ReadAngle(bits, bits_);
+          break;
+        }
+        case kQAngleCoord: {
+          const bool has_pitch = bits->ReadBit();
+          const bool has_yaw = bits->ReadBit();
+          const bool has_roll = bits->ReadBit();
+          if (has_pitch) value.v[0] = ReadCoord(bits);
+          if (has_yaw) value.v[1] = ReadCoord(bits);
+          if (has_roll) value.v[2] = ReadCoord(bits);
+          break;
+        }
+      }
+      break;
+    }
+    case kBlob: {
+      // A byte count, then the bytes. Established against a chicken's
+      // serialised pose recipe, which is the only place this type appears.
+      value.kind = FieldValue::kString;
+      const std::uint64_t count = bits->ReadVarUInt64();
+      if (count > (1u << 20)) {
+        bits->ReadBits(64);  // an absurd length; poison the reader
+        break;
+      }
+      for (std::uint64_t i = 0; i < count && bits->ok(); ++i) {
+        value.s.push_back(static_cast<char>(bits->ReadBits(8)));
+      }
+      break;
+    }
+    case kPolymorphic:
+      // Established against a game rules baseline: after the presence bit,
+      // a ubitvar picks the type, with 0 meaning the declared one.
+      value.kind = FieldValue::kInt;
+      value.i = bits->ReadBit() ? static_cast<long long>(bits->ReadUBitVar()) : -1;
+      break;
+    case kUnsupported:
+      break;
   }
   return value;
 }
@@ -266,23 +454,45 @@ void EntityDecoder::Flatten(const SerializerSet& set,
       continue;
     }
     const FieldInfo& info = set.fields[static_cast<std::size_t>(index)];
+    const TypeSpec spec = ParseTypeSpec(info.var_type);
     flat.name = prefix.empty() ? info.var_name : prefix + "." + info.var_name;
-    flat.decoder = FieldDecoder(info);
-    // Arrays come in two spellings: the vector templates, and a plain fixed
-    // size suffix such as MedalRank_t[6]. char[128] looks like the latter but
-    // is a string, and is decoded as one.
-    const bool fixed_array = !info.var_type.empty() &&
-                             info.var_type.back() == ']' &&
-                             !StartsWith(info.var_type, "char[");
-    flat.is_array = fixed_array ||
-                    StartsWith(info.var_type, "CNetworkUtlVectorBase") ||
-                    StartsWith(info.var_type, "CUtlVector");
 
     if (info.has_child()) {
-      const Serializer* child = set.Find(info.field_serializer_name);
+      // A struct, or an array of them. The schema spells most single structs
+      // with a pointer; a bare struct type that is not a vector is one too.
+      const bool single = spec.pointer || IsPointerType(spec.base) ||
+                          (spec.count == 0 && !IsVectorType(spec.base));
+      flat.model = single ? FlatField::kFixedTable : FlatField::kVariableTable;
+      flat.self = single ? FieldDecoder::Bool() : FieldDecoder::VarUInt();
+      const Serializer* child =
+          set.Find(info.field_serializer_name, info.field_serializer_version);
       if (child != nullptr) {
         Flatten(set, *child, flat.name, depth + 1, &flat.children);
       }
+      if (single && !info.polymorphic_types.empty()) {
+        flat.self = FieldDecoder::Polymorphic();
+        for (const FieldInfo::Polymorphic& type : info.polymorphic_types) {
+          std::vector<FlatField> members;
+          const Serializer* alt = set.Find(type.serializer_name, type.version);
+          if (alt != nullptr) Flatten(set, *alt, flat.name, depth + 1, &members);
+          flat.alternatives.push_back(std::move(members));
+        }
+      }
+    } else if (spec.count > 0 && spec.base != "char") {
+      // T[N]. char[N] looks the same but is a string, decoded as one.
+      flat.model = FlatField::kFixedArray;
+      flat.decoder = FieldDecoder(spec.base, info);
+      flat.self = flat.decoder;
+    } else if (IsVectorType(spec.base)) {
+      // A vector of values: its element type is the generic parameter, while
+      // the encoding parameters are the field's own.
+      flat.model = FlatField::kVariableArray;
+      flat.decoder = FieldDecoder(ParseTypeSpec(spec.generic).base, info);
+      flat.self = FieldDecoder::VarUInt();
+    } else {
+      flat.model = FlatField::kSimple;
+      flat.decoder = FieldDecoder(spec.base, info);
+      flat.self = flat.decoder;
     }
     out->push_back(std::move(flat));
   }
@@ -305,46 +515,164 @@ bool EntityDecoder::Init(const SerializerSet& serializers,
   return true;
 }
 
-const EntityDecoder::FlatField* EntityDecoder::Resolve(const FlatClass& flat,
-                                                       const FieldPath& path,
-                                                       std::string* name) const {
-  if (path.path[0] < 0 ||
-      static_cast<std::size_t>(path.path[0]) >= flat.fields.size()) {
-    return nullptr;
-  }
-  const FlatField* field = &flat.fields[static_cast<std::size_t>(path.path[0])];
-  *name = field->name;
-  // An array spends one path level on the element index before any member
-  // index. A vector of structs therefore uses two levels: which element, then
-  // which member of it.
-  bool subscript_pending = field->is_array;
-
-  for (int level = 1; level <= path.last; ++level) {
+// Walks a field path down the class's tree. Each level's meaning depends on
+// the field it lands on: a member index for a struct, an element index for an
+// array, and for a path that stops at an array or struct, the field's own
+// "self" value (a size, or a presence bit).
+const FieldDecoder* EntityDecoder::Resolve(const FlatClass& flat,
+                                           const Entity& entity,
+                                           const FieldPath& path,
+                                           std::string* name) const {
+  const std::vector<FlatField>* fields = &flat.fields;
+  int level = 0;
+  for (;;) {
     const int index = path.path[level];
-    if (index < 0) return nullptr;
+    if (index < 0 || static_cast<std::size_t>(index) >= fields->size()) return nullptr;
+    const FlatField* field = &(*fields)[static_cast<std::size_t>(index)];
+    *name = field->name;
+    ++level;
+    const bool ends_here = level > path.last;
 
-    if (subscript_pending) {
-      *name = field->name + "." + std::to_string(index);
-      subscript_pending = false;
-      continue;
-    }
-    if (!field->children.empty()) {
-      if (static_cast<std::size_t>(index) >= field->children.size()) return nullptr;
-      field = &field->children[static_cast<std::size_t>(index)];
-      *name = field->name;
-      subscript_pending = field->is_array;
-      continue;
+    switch (field->model) {
+      case FlatField::kSimple:
+        return ends_here ? &field->decoder : nullptr;
+
+      case FlatField::kFixedArray:
+      case FlatField::kVariableArray:
+        if (ends_here) return &field->self;
+        *name += "." + std::to_string(path.path[level]);
+        return level == path.last ? &field->decoder : nullptr;
+
+      case FlatField::kFixedTable:
+        if (ends_here) return &field->self;
+        fields = &field->children;
+        if (!field->alternatives.empty()) {
+          auto variant = entity.variants.find(field->name);
+          if (variant != entity.variants.end() && variant->second > 0) {
+            const std::size_t k = static_cast<std::size_t>(variant->second - 1);
+            if (k >= field->alternatives.size()) return nullptr;
+            fields = &field->alternatives[k];
+          }
+        }
+        continue;
+
+      case FlatField::kVariableTable:
+        if (ends_here) return &field->self;
+        *name += "." + std::to_string(path.path[level]);
+        ++level;
+        if (level > path.last) return &field->self;
+        fields = &field->children;
+        continue;
     }
     return nullptr;
   }
-  return field;
+}
+
+// ------------------------------------------------------------------- updates
+
+bool EntityDecoder::ApplyUpdate(Entity* entity, BitReader* bits, bool trace,
+                                std::string* error) {
+  auto flat = by_class_id_.find(entity->class_id);
+  if (flat == by_class_id_.end()) {
+    return Err(error, "entity has no flattened class");
+  }
+
+  std::vector<FieldPath> paths;
+  if (!ReadFieldPaths(bits, &paths)) {
+    return Err(error, "field path stream ended badly in " + flat->second.name);
+  }
+  for (const FieldPath& path : paths) {
+    std::string name;
+    const FieldDecoder* decoder = Resolve(flat->second, *entity, path, &name);
+    if (decoder == nullptr) {
+      return Err(error, "field path " + path.ToString() + " does not resolve in " +
+                            flat->second.name);
+    }
+    if (decoder->unsupported()) {
+      return Err(error, "no decoder for " + name + " <" + decoder->description() +
+                            "> in " + flat->second.name);
+    }
+    const std::size_t at = bits->BitsConsumed();
+    // EXPERIMENT: dump the raw bits around fields whose name contains a
+    // given substring, in every packet, to establish an encoding.
+    static const char* watch = std::getenv("CS2MV_WATCH");
+    static int watch_more = 0;
+    if (watch != nullptr && (name.find(watch) != std::string::npos || watch_more > 0)) {
+      if (name.find(watch) != std::string::npos) watch_more = 3; else --watch_more;
+      BitReader peek = *bits;
+      std::string raw;
+      for (int i = 0; i < 128 && peek.ok(); ++i) raw.push_back(peek.ReadBit() ? '1' : '0');
+      std::printf("WATCH pkt %lld entity %d %s @%zu <%s> %s\n", packets_seen_, entity->index,
+                  name.c_str(), at, decoder->description().c_str(), raw.c_str());
+    }
+    // EXPERIMENT: read one bit less for a named field.
+    static const char* shrink = std::getenv("CS2MV_SHRINK");
+    FieldValue decoded;
+    if (shrink != nullptr && name == shrink) {
+      BitReader before = *bits;
+      decoded = decoder->Decode(bits);
+      const std::size_t consumed = bits->BitsConsumed() - before.BitsConsumed();
+      *bits = before;
+      for (std::size_t i = 0; i + 1 < consumed; ++i) bits->ReadBit();
+    } else {
+      decoded = decoder->Decode(bits);
+    }
+    if (trace) {
+      char text[128];
+      switch (decoded.kind) {
+        case FieldValue::kFloat:
+          std::snprintf(text, sizeof(text), "%g %g %g %g", decoded.v[0],
+                        decoded.v[1], decoded.v[2], decoded.v[3]);
+          break;
+        case FieldValue::kInt:
+          std::snprintf(text, sizeof(text), "%lld", decoded.i);
+          break;
+        case FieldValue::kUInt:
+          std::snprintf(text, sizeof(text), "%llu", decoded.u);
+          break;
+        default:
+          std::snprintf(text, sizeof(text), "\"%s\"", decoded.s.c_str());
+          break;
+      }
+      std::printf("      @%-7zu %-12s %-46s = %s  <%s>\n", at,
+                  path.ToString().c_str(), name.c_str(), text,
+                  decoder->description().c_str());
+    }
+    entity->values[name] = decoded;
+    if (decoder->polymorphic()) {
+      entity->variants[name] = decoded.i < 0 ? 0 : static_cast<int>(decoded.i);
+    }
+    ++updates_applied_;
+    if (!bits->ok()) {
+      return Err(error, "bit stream exhausted at " + name + " in " + flat->second.name);
+    }
+  }
+  return true;
+}
+
+bool EntityDecoder::CheckBaseline(int class_id, Entity* scratch, int* bits_left,
+                                  std::string* error) {
+  auto baseline = baselines_.find(class_id);
+  if (baseline == baselines_.end()) return Err(error, "no baseline");
+  auto flat = by_class_id_.find(class_id);
+  if (flat == by_class_id_.end()) return Err(error, "class is not in the schema");
+
+  scratch->class_id = class_id;
+  scratch->class_name = flat->second.name;
+  BitReader bits(baseline->second.data(), baseline->second.size());
+  const long long applied = updates_applied_;
+  const bool ok = ApplyUpdate(scratch, &bits, trace_ > 0, error);
+  updates_applied_ = applied;
+  *bits_left = static_cast<int>(bits.BitsLeft());
+  return ok;
 }
 
 // ------------------------------------------------------------ packet entities
 
 bool EntityDecoder::ApplyPacket(const std::string& message, std::string* error) {
-  // CSVCMsg_PacketEntities: entity_data = 7 in older builds, serialized
-  // entities = 13 in current ones.
+  // CSVCMsg_PacketEntities: entity_data = 7 carries the payload; the newer
+  // serialized_entities = 13 exists alongside it but is a much smaller,
+  // different thing. Taking the wrong one decodes noise.
   pb::Slice data;
   int updated_entries = 0;
   bool is_delta = false;
@@ -352,43 +680,37 @@ bool EntityDecoder::ApplyPacket(const std::string& message, std::string* error) 
     pb::Reader r(message);
     std::uint32_t field = 0;
     while (r.NextField(&field)) {
-      // Which field actually carries the payload has changed between builds,
-      // so when tracing, show what the message really contains rather than
-      // assuming.
-      if (trace_ > 0 && r.wire_type() == pb::kLengthDelimited) {
+      if (r.wire_type() == pb::kLengthDelimited) {
         const pb::Slice s = r.ReadBytes();
-        std::printf("    field %-3u len=%zu\n", field, s.size);
+        if (trace_ > 0) std::printf("    field %-3u len=%zu\n", field, s.size);
         if (field == 7) data = s;
-        if (field == 13 && data.data == nullptr) data = s;
         continue;
       }
-      switch (field) {
-        case 2: updated_entries = r.ReadInt32(); break;
-        case 3: is_delta = r.ReadBool(); break;
-        // entity_data is the payload in current builds; serialized_entities
-        // exists alongside it but is a much smaller, different thing. Taking
-        // the wrong one decodes noise, so the preference is explicit.
-        case 7: data = r.ReadBytes(); break;
-        case 13:
-          if (data.data == nullptr) data = r.ReadBytes();
-          break;
-        default:
-          if (trace_ > 0) {
-            const std::uint64_t v = r.ReadVarint();
-            std::printf("    field %-3u = %llu\n", field,
-                        static_cast<unsigned long long>(v));
-          }
-          break;
+      const std::uint64_t v = r.ReadVarint();
+      if (trace_ > 0) {
+        std::printf("    field %-3u = %llu\n", field, static_cast<unsigned long long>(v));
       }
+      if (field == 2) updated_entries = static_cast<int>(v);
+      if (field == 3) is_delta = v != 0;
     }
   }
   if (data.data == nullptr || updated_entries <= 0) return true;
-  (void)is_delta;
+  ++packets_seen_;
 
   BitReader bits(data.data, data.size);
   int entity_index = -1;
   const bool trace = trace_ > 0;
   if (trace_ > 0) --trace_;
+  if (std::getenv("CS2MV_DUMP_DIR") != nullptr) {
+    // The raw entity data of every packet, for poking at with other tools.
+    static int dumped = 0;
+    const std::string path = std::string(std::getenv("CS2MV_DUMP_DIR")) + "/packet_" +
+                             std::to_string(dumped++) + ".bin";
+    if (FILE* f = std::fopen(path.c_str(), "wb")) {
+      std::fwrite(data.data, 1, data.size, f);
+      std::fclose(f);
+    }
+  }
   if (trace) {
     std::printf("  packet: %d updates, %zu bytes, delta=%d\n", updated_entries,
                 data.size, is_delta ? 1 : 0);
@@ -399,7 +721,7 @@ bool EntityDecoder::ApplyPacket(const std::string& message, std::string* error) 
     entity_index += 1 + static_cast<int>(bits.ReadUBitVar());
     if (!bits.ok() || entity_index < 0 || entity_index > 16384) {
       ++packets_failed_;
-      return Err(error, "entity index out of range");
+      return Err(error, "entity index out of range after update " + std::to_string(i));
     }
 
     const bool leaving = bits.ReadBit();
@@ -407,6 +729,9 @@ bool EntityDecoder::ApplyPacket(const std::string& message, std::string* error) 
 
     if (leaving) {
       // Leave, and possibly delete. The second bit distinguishes them.
+      if (trace) {
+        std::printf("   -%s idx=%d\n", creating ? "delete" : "leave", entity_index);
+      }
       if (creating) entities_.erase(entity_index);
       continue;
     }
@@ -428,52 +753,41 @@ bool EntityDecoder::ApplyPacket(const std::string& message, std::string* error) 
       }
       fresh.class_name = flat->second.name;
       if (trace) {
-        std::printf("   +create idx=%-5d class=%-3d %s\n", entity_index, class_id,
-                    fresh.class_name.c_str());
+        std::printf("   +create idx=%-5d class=%-3d %s @%zu\n", entity_index,
+                    class_id, fresh.class_name.c_str(), bits.BitsConsumed());
       }
       entities_[entity_index] = std::move(fresh);
       entity = &entities_[entity_index];
+
+      // The class baseline first, then whatever this creation changes. The
+      // baseline is its own bit stream, so failing to read it costs values,
+      // not synchronisation.
+      auto baseline = baselines_.find(class_id);
+      if (baseline != baselines_.end()) {
+        BitReader base_bits(baseline->second.data(), baseline->second.size());
+        std::string base_error;
+        if (!ApplyUpdate(entity, &base_bits, false, &base_error) && trace) {
+          std::printf("    (baseline for %s failed: %s)\n",
+                      entity->class_name.c_str(), base_error.c_str());
+        }
+      }
     } else {
       auto it = entities_.find(entity_index);
       if (it == entities_.end()) {
         ++packets_failed_;
-        return Err(error, "delta for an entity that does not exist");
+        return Err(error, "delta for entity " + std::to_string(entity_index) +
+                              ", which does not exist");
       }
       entity = &it->second;
-    }
-
-    auto flat = by_class_id_.find(entity->class_id);
-    if (flat == by_class_id_.end()) {
-      ++packets_failed_;
-      return Err(error, "entity has no flattened class");
-    }
-
-    std::vector<FieldPath> paths;
-    if (!ReadFieldPaths(&bits, &paths)) {
-      ++packets_failed_;
-      return Err(error, "field path stream ended badly");
-    }
-    for (const FieldPath& path : paths) {
-      std::string name;
-      const FlatField* field = Resolve(flat->second, path, &name);
-      if (field == nullptr) {
-        ++packets_failed_;
-        return Err(error, "field path " + path.ToString() + " does not resolve in " +
-                              flat->second.name);
-      }
-      const FieldValue decoded = field->decoder.Decode(&bits);
       if (trace) {
-        std::printf("      %-46s = %s\n", name.c_str(),
-                    decoded.kind == FieldValue::kString
-                        ? decoded.s.c_str()
-                        : std::to_string(decoded.AsFloat()).c_str());
+        std::printf("   ~update idx=%-5d %s @%zu\n", entity_index,
+                    entity->class_name.c_str(), bits.BitsConsumed());
       }
-      entity->values[name] = decoded;
-      ++updates_applied_;
-      if (!bits.ok()) {
-        ++packets_failed_;
-        return Err(error, "bit stream exhausted mid update");
-      }
+    }
+
+    if (!ApplyUpdate(entity, &bits, trace, error)) {
+      ++packets_failed_;
+      return false;
     }
   }
   return true;

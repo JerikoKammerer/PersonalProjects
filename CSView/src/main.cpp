@@ -363,7 +363,7 @@ int CommandInspect(const std::vector<std::string>& args) {
 // replay is built on, so being able to look at it directly matters.
 int CommandSchema(const std::vector<std::string>& args) {
   if (args.empty()) {
-    std::cerr << "usage: cs2mv schema <demo file> [serializer name]\n";
+    std::cerr << "usage: cs2mv schema <demo file> [serializer name | all]\n";
     return 2;
   }
   DemoReader reader;
@@ -405,28 +405,190 @@ int CommandSchema(const std::vector<std::string>& args) {
             << " (max id " << classes.max_class_id << ", "
             << classes.class_id_bits() << " bits)\n";
 
+  // One serializer by name, or every one of them with "all".
   const std::string want = args.size() > 1 ? args[1] : "CCSPlayerPawn";
-  const Serializer* s = serializers.Find(want);
-  if (s == nullptr) {
-    std::cout << "\nno serializer named " << want << "\n";
-    return 0;
-  }
-  std::cout << "\n" << s->name << " v" << s->version << ", " << s->fields.size()
-            << " fields:\n";
-  for (int index : s->fields) {
-    if (index < 0 || static_cast<std::size_t>(index) >= serializers.fields.size()) continue;
-    const FieldInfo& f = serializers.fields[static_cast<std::size_t>(index)];
-    std::cout << "  " << f.var_name << "  <" << f.var_type << ">";
-    if (f.bit_count > 0) std::cout << " bits=" << f.bit_count;
-    if (!f.encoder.empty()) std::cout << " enc=" << f.encoder;
-    if (f.low != 0.0f || f.high != 0.0f) {
-      std::cout << " range=[" << f.low << "," << f.high << "]";
+  std::vector<const Serializer*> chosen;
+  if (want == "all") {
+    for (const Serializer& s : serializers.serializers) chosen.push_back(&s);
+  } else {
+    const Serializer* s = serializers.Find(want);
+    if (s == nullptr) {
+      std::cout << "\nno serializer named " << want << "\n";
+      return 0;
     }
-    if (f.encode_flags != 0) std::cout << " flags=" << f.encode_flags;
-    if (f.has_child()) std::cout << " -> " << f.field_serializer_name;
-    std::cout << "\n";
+    chosen.push_back(s);
+  }
+  for (const Serializer* s : chosen) {
+    std::cout << "\n" << s->name << " v" << s->version << ", " << s->fields.size()
+              << " fields:\n";
+    for (int index : s->fields) {
+      if (index < 0 || static_cast<std::size_t>(index) >= serializers.fields.size()) continue;
+      const FieldInfo& f = serializers.fields[static_cast<std::size_t>(index)];
+      std::cout << "  " << f.var_name << "  <" << f.var_type << ">";
+      if (f.bit_count > 0) std::cout << " bits=" << f.bit_count;
+      if (!f.encoder.empty()) std::cout << " enc=" << f.encoder;
+      if (!f.var_serializer.empty()) std::cout << " ser=" << f.var_serializer;
+      if (f.low != 0.0f || f.high != 0.0f) {
+        std::cout << " range=[" << f.low << "," << f.high << "]";
+      }
+      if (f.encode_flags != 0) std::cout << " flags=" << f.encode_flags;
+      if (f.has_child()) std::cout << " -> " << f.field_serializer_name;
+      std::cout << "\n";
+    }
   }
   return 0;
+}
+
+// The instancebaseline string table, as a DEM_StringTables or DEM_FullPacket
+// frame carries it: CDemoStringTables { tables = 1 { table_name = 1,
+// items = 2 { str = 1, data = 2 } } }. Each item is one class's default
+// state, keyed by its class id.
+void LoadBaselines(const DemoFrame& frame, EntityDecoder* decoder) {
+  pb::Slice tables{reinterpret_cast<const std::uint8_t*>(frame.body.data()),
+                   frame.body.size()};
+  if (frame.kind == kDemFullPacket) {
+    // CDemoFullPacket { string_table = 1, packet = 2 }
+    tables = pb::Slice{};
+    pb::Reader r(frame.body);
+    std::uint32_t field = 0;
+    while (r.NextField(&field)) {
+      if (field == 1 && r.wire_type() == pb::kLengthDelimited) tables = r.ReadBytes();
+    }
+    if (tables.data == nullptr) return;
+  }
+
+  pb::Reader r(tables);
+  std::uint32_t field = 0;
+  while (r.NextField(&field)) {
+    if (field != 1 || r.wire_type() != pb::kLengthDelimited) continue;
+    pb::Reader table(r.ReadBytes());
+    std::string name;
+    std::vector<pb::Slice> items;
+    std::uint32_t f = 0;
+    while (table.NextField(&f)) {
+      if (f == 1) {
+        name = table.ReadString();
+      } else if (f == 2 && table.wire_type() == pb::kLengthDelimited) {
+        items.push_back(table.ReadBytes());
+      }
+    }
+    if (name != "instancebaseline") continue;
+    for (const pb::Slice& item : items) {
+      pb::Reader entry(item);
+      std::string key;
+      pb::Slice data;
+      std::uint32_t g = 0;
+      while (entry.NextField(&g)) {
+        if (g == 1) {
+          key = entry.ReadString();
+        } else if (g == 2 && entry.wire_type() == pb::kLengthDelimited) {
+          data = entry.ReadBytes();
+        }
+      }
+      // Alternate baselines are keyed "class:index"; only the plain ones are
+      // the class defaults.
+      if (key.empty() || key.find(':') != std::string::npos || data.data == nullptr) continue;
+      decoder->SetBaseline(std::atoi(key.c_str()), data.ToString());
+    }
+  }
+}
+
+// Reads a demo up to the point where entity decoding can start: the schema,
+// the class table and the first baseline snapshot. Frames after that are
+// handed to `on_frame` until it returns false.
+template <typename OnFrame>
+bool WalkEntityFrames(const std::string& path, EntityDecoder* decoder,
+                      OnFrame on_frame, std::string* error) {
+  DemoReader reader;
+  if (!reader.Open(path, error)) return false;
+
+  SerializerSet serializers;
+  ClassTable classes;
+  bool ready = false;
+  DemoFrame frame;
+  while (reader.Next(&frame)) {
+    if (frame.kind == kDemSendTables) {
+      if (!ParseSendTables(frame.body, &serializers, error)) return false;
+      continue;
+    }
+    if (frame.kind == kDemClassInfo) {
+      if (!ParseClassInfo(frame.body, &classes, error)) return false;
+      continue;
+    }
+    if (!ready && !serializers.serializers.empty() && !classes.names.empty()) {
+      if (!decoder->Init(serializers, classes, error)) return false;
+      ready = true;
+    }
+    if (!ready) continue;
+    if (frame.kind == kDemStringTables || frame.kind == kDemFullPacket) {
+      LoadBaselines(frame, decoder);
+    }
+    if (!on_frame(frame)) break;
+  }
+  if (!ready) {
+    *error = "demo carried no send tables or class info";
+    return false;
+  }
+  return true;
+}
+
+// Decodes every class's baseline on its own. A baseline is an update encoded
+// exactly like a packet's, but for one class in isolation, so it is the
+// cleanest possible check of that class's decoders: it either reads to the
+// end with nothing but padding left, or the decoders are wrong.
+int CommandBaselines(const std::vector<std::string>& args) {
+  if (args.empty()) {
+    std::cerr << "usage: cs2mv baselines <demo file> [class name]\n";
+    return 2;
+  }
+  const std::string want = args.size() > 1 ? args[1] : "";
+
+  EntityDecoder decoder;
+  if (!want.empty()) decoder.set_trace(1 << 20);
+  std::string error;
+  // Only the first snapshot is needed; stop at the first packet after it.
+  bool have_baselines = false;
+  const bool ok = WalkEntityFrames(args[0], &decoder, [&](const DemoFrame& frame) {
+    if (decoder.baseline_count() > 0) have_baselines = true;
+    return !(have_baselines && frame.kind == kDemPacket);
+  }, &error);
+  if (!ok) {
+    std::cerr << "error: " << error << "\n";
+    return 1;
+  }
+
+  int passed = 0, failed = 0;
+  for (const auto& entry : decoder.baselines()) {
+    const std::string* name = decoder.class_name(entry.first);
+    if (name == nullptr) continue;
+    if (!want.empty() && *name != want) continue;
+
+    // The raw bytes, for poking at with other tools when a class fails.
+    if (!want.empty() && std::getenv("CS2MV_DUMP") != nullptr) {
+      std::ofstream dump(std::getenv("CS2MV_DUMP"), std::ios::binary);
+      dump.write(entry.second.data(), static_cast<std::streamsize>(entry.second.size()));
+    }
+    Entity scratch;
+    int bits_left = 0;
+    std::string reason;
+    const bool good = decoder.CheckBaseline(entry.first, &scratch, &bits_left, &reason);
+    // Padding is at most the rest of the last byte.
+    const bool clean = good && bits_left < 8;
+    if (clean) {
+      ++passed;
+      if (!want.empty()) {
+        std::printf("ok    %-3d %-40s %zu fields\n", entry.first, name->c_str(),
+                    scratch.values.size());
+      }
+      continue;
+    }
+    ++failed;
+    std::printf("FAIL  %-3d %-40s %zu fields, %d bits left%s%s\n", entry.first,
+                name->c_str(), scratch.values.size(), bits_left,
+                reason.empty() ? "" : ": ", reason.c_str());
+  }
+  std::printf("\nbaselines: %d clean, %d failed\n", passed, failed);
+  return failed == 0 ? 0 : 1;
 }
 
 // Decodes entity state and reports whether it actually worked. Entity decoding
@@ -439,47 +601,17 @@ int CommandEntities(const std::vector<std::string>& args) {
   }
   const long long limit = args.size() > 1 ? std::atoll(args[1].c_str()) : 400;
 
-  DemoReader reader;
-  std::string error;
-  if (!reader.Open(args[0], &error)) {
-    std::cerr << "error: " << error << "\n";
-    return 1;
-  }
-
-  SerializerSet serializers;
-  ClassTable classes;
   EntityDecoder decoder;
-  if (std::getenv("CS2MV_TRACE") != nullptr) decoder.set_trace(1);
+  if (std::getenv("CS2MV_TRACE") != nullptr) {
+    decoder.set_trace(std::atoi(std::getenv("CS2MV_TRACE")));
+  }
   if (std::getenv("CS2MV_NO_SPAWNGROUP") != nullptr) decoder.set_read_spawn_group(false);
-  bool ready = false;
   long long packets = 0;
   std::string first_failure;
+  std::string error;
 
-  DemoFrame frame;
-  while (reader.Next(&frame)) {
-    if (frame.kind == kDemSendTables) {
-      if (!ParseSendTables(frame.body, &serializers, &error)) {
-        std::cerr << "error: " << error << "\n";
-        return 1;
-      }
-      continue;
-    }
-    if (frame.kind == kDemClassInfo) {
-      if (!ParseClassInfo(frame.body, &classes, &error)) {
-        std::cerr << "error: " << error << "\n";
-        return 1;
-      }
-      continue;
-    }
-    if (!ready && !serializers.serializers.empty() && !classes.names.empty()) {
-      if (!decoder.Init(serializers, classes, &error)) {
-        std::cerr << "error: " << error << "\n";
-        return 1;
-      }
-      ready = true;
-    }
-    if (!ready) continue;
-    if (frame.kind != kDemPacket && frame.kind != kDemSignonPacket) continue;
+  const bool ok = WalkEntityFrames(args[0], &decoder, [&](const DemoFrame& frame) {
+    if (frame.kind != kDemPacket && frame.kind != kDemSignonPacket) return true;
 
     // Walk the packet for svc_PacketEntities (55).
     pb::Reader r(frame.body);
@@ -488,7 +620,7 @@ int CommandEntities(const std::vector<std::string>& args) {
     while (r.NextField(&field)) {
       if (field == 3 && r.wire_type() == pb::kLengthDelimited) payload = r.ReadBytes();
     }
-    if (payload.data == nullptr) continue;
+    if (payload.data == nullptr) return true;
 
     BitReader bits(payload.data, payload.size);
     std::string buf;
@@ -502,16 +634,21 @@ int CommandEntities(const std::vector<std::string>& args) {
 
       std::string packet_error;
       if (!decoder.ApplyPacket(buf, &packet_error) && first_failure.empty()) {
-        first_failure = packet_error;
+        first_failure = "packet " + std::to_string(packets) + ": " + packet_error;
       }
       ++packets;
     }
-    if (limit > 0 && packets >= limit) break;
+    return !(limit > 0 && packets >= limit);
+  }, &error);
+  if (!ok) {
+    std::cerr << "error: " << error << "\n";
+    return 1;
   }
 
   std::cout << "packets decoded : " << packets << "\n"
             << "field updates   : " << decoder.updates_applied() << "\n"
             << "desyncs         : " << decoder.packets_failed() << "\n"
+            << "baselines       : " << decoder.baseline_count() << "\n"
             << "entities alive  : " << decoder.entities().size() << "\n";
   if (!first_failure.empty()) {
     std::cout << "first failure   : " << first_failure << "\n";
@@ -535,7 +672,9 @@ int CommandEntities(const std::vector<std::string>& args) {
                         ? static_cast<float>(cell_y->AsInt()) * 512.0f - 16384.0f + vec_y->AsFloat()
                         : 0.0f;
     const FieldValue* health = entity.Get("m_iHealth");
-    std::printf("  entity %-5d  x=%9.1f  y=%9.1f  health=%lld\n", entity.index, x, y,
+    const FieldValue* angles = entity.Get("m_angEyeAngles");
+    std::printf("  entity %-5d  x=%9.1f  y=%9.1f  yaw=%7.1f  health=%lld\n", entity.index,
+                x, y, angles != nullptr ? angles->v[1] : 0.0f,
                 health != nullptr ? health->AsInt() : -1);
     if (++shown >= 12) break;
   }
@@ -870,6 +1009,7 @@ int main(int argc, char** argv) {
   if (command == "inspect") return CommandInspect(args);
   if (command == "schema") return CommandSchema(args);
   if (command == "entities") return CommandEntities(args);
+  if (command == "baselines") return CommandBaselines(args);
   if (command == "fetch") return CommandFetch(args, options);
   if (command == "gc-request") return CommandGcRequest(args);
   if (command == "help" || command == "--help" || command == "-h") {

@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <map>
+#include <utility>
 #include <string>
 #include <vector>
 
@@ -24,6 +25,8 @@ struct FieldInfo {
   std::string var_name;    // "m_vecOrigin", "m_iHealth", ...
   std::string send_node;   // grouping only; not needed to decode
   std::string encoder;     // "coord", "normal", "simtime", "qangle_pitch_yaw"
+  std::string var_serializer;  // "ehandle", "cellx", "qangle": how the game
+                               // itself serialises the variable
   int bit_count = 0;
   float low = 0.0f;
   float high = 0.0f;
@@ -32,6 +35,14 @@ struct FieldInfo {
   // Set when the field is itself a struct or an array of them.
   std::string field_serializer_name;
   int field_serializer_version = -1;
+
+  // A pointer to a base class may point at any of these instead. The update
+  // says which, per entity, when it sends the field itself.
+  struct Polymorphic {
+    std::string serializer_name;
+    int version = 0;
+  };
+  std::vector<Polymorphic> polymorphic_types;
 
   bool has_child() const { return !field_serializer_name.empty(); }
 };
@@ -47,13 +58,21 @@ struct SerializerSet {
   std::vector<FieldInfo> fields;
   std::vector<Serializer> serializers;
 
-  // Serializer name to index. A demo can carry several versions of a name; the
-  // last one wins, which is the one the packets use.
+  // Serializer name to index. A demo carries several versions of some names
+  // (CBodyComponentPoint v0 has twelve fields, v1 seven), and a field that
+  // embeds one says which version it means. Classes are looked up by name
+  // alone and get the last version, which is the one packets use.
   std::map<std::string, int> by_name;
+  std::map<std::pair<std::string, int>, int> by_name_version;
 
   const Serializer* Find(const std::string& name) const {
     auto it = by_name.find(name);
     return it == by_name.end() ? nullptr : &serializers[static_cast<std::size_t>(it->second)];
+  }
+  const Serializer* Find(const std::string& name, int version) const {
+    auto it = by_name_version.find(std::make_pair(name, version));
+    if (it == by_name_version.end()) return Find(name);
+    return &serializers[static_cast<std::size_t>(it->second)];
   }
 };
 
