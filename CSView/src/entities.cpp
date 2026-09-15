@@ -187,6 +187,13 @@ FieldDecoder::FieldDecoder(const std::string& type, const FieldInfo& info) {
       qangle_ = kQAnglePitchYaw;
     } else if (info.encoder == "qangle_precise") {
       qangle_ = kQAnglePrecise;
+    } else if (info.bit_count >= 32) {
+      // Three plain floats. Established against an aim punch angle whose
+      // three components read as sane floats only at this alignment, with a
+      // place name string sitting exactly after them.
+      kind_ = kFloats;
+      components_ = 3;
+      float_ = kNoScale;
     } else if (info.bit_count != 0) {
       qangle_ = kQAngleFixedBits;
     } else {
@@ -243,20 +250,21 @@ void FieldDecoder::InitFloat(const FieldInfo& info) {
   // A range the schema leaves out is the unit interval.
   if (low == 0.0f && high == 0.0f) high = 1.0f;
 
-  // Flags that cannot apply to this range are dropped, so that the bit budget
-  // below is right. Integer encoding overrides the rounding flags outright.
+  // What the flags do on the wire was settled against real packets rather
+  // than taken from a description, because the bit budget has to be exact:
   //
-  // What the rounding flags do was settled against real baselines, not taken
-  // from a description: they only shift the range so that the low (or high)
-  // end is exactly representable, and spend no bit of their own. Zero gets a
-  // presence bit, except when a rounding flag is also set - a view offset
-  // declared [-64,64] with EncodeZero carries the bit, a playback rate
-  // declared [-4,12] with RoundDown|EncodeZero does not.
+  //  * RoundDown and RoundUp spend no bit. They shrink the range by one step
+  //    so that its low (or high) end lands exactly on a code: a friction of
+  //    [0,4] in 8 bits then reads 1.0 rather than 1.0039, and a max speed of
+  //    [0,2048] in 12 bits reads 260 rather than 260.06.
+  //  * EncodeZero spends one presence bit, unless zero already lands exactly
+  //    on a code, in which case it is redundant and the game omits it. That
+  //    covers a stashed speed declared [0,16384] (zero is code 0), and a
+  //    playback rate declared [-4,12] with RoundDown (zero is code 64), but
+  //    not a view offset declared [-64,64] in 10 bits.
+  //  * EncodeIntegers overrides everything else.
   if ((flags_ & kRoundDown) && (flags_ & kRoundUp)) flags_ &= ~(kRoundDown | kRoundUp);
-  if (low == 0.0f && (flags_ & kRoundDown)) flags_ &= ~kRoundDown;
-  if (high == 0.0f && (flags_ & kRoundUp)) flags_ &= ~kRoundUp;
   if (low > 0.0f || high < 0.0f) flags_ &= ~kEncodeZero;
-  if (flags_ & (kRoundDown | kRoundUp)) flags_ &= ~kEncodeZero;
   if (flags_ & kEncodeIntegers) flags_ &= ~(kRoundUp | kRoundDown | kEncodeZero);
 
   int steps = 1 << bits_;
@@ -278,17 +286,14 @@ void FieldDecoder::InitFloat(const FieldInfo& info) {
     high = low + static_cast<float>(span) - static_cast<float>(span) / static_cast<float>(steps);
   }
 
-  // EXPERIMENT: a [0,1] round-down float spends one bit fewer.
-  static const char* unit_rule = std::getenv("CS2MV_UNIT_RULE");
-  if (unit_rule != nullptr && (info.encode_flags & kRoundDown) && info.low == 0.0f &&
-      info.high == 1.0f) {
-    bits_ -= std::atoi(unit_rule);
-    steps = 1 << bits_;
-  }
-
   low_ = low;
   high_ = high;
   interval_ = (steps > 1) ? (high - low) / static_cast<float>(steps - 1) : 0.0f;
+
+  if ((flags_ & kEncodeZero) && interval_ > 0.0f) {
+    const float code = -low_ / interval_;
+    if (std::fabs(code - std::round(code)) < 1e-4f) flags_ &= ~kEncodeZero;
+  }
 }
 
 float FieldDecoder::DecodeFloat(BitReader* bits) const {
@@ -388,17 +393,9 @@ FieldValue FieldDecoder::Decode(BitReader* bits) const {
           if (has_roll) value.v[2] = ReadAngle(bits, 20) - 180.0f;
           break;
         }
-        case kQAngleFixedBits: {
-          // EXPERIMENT: override the width of 32 bit angles.
-          static const char* exp = std::getenv("CS2MV_QANGLE32_BITS");
-          if (exp != nullptr && bits_ == 32) {
-            int n = std::atoi(exp);
-            while (n > 0) { bits->ReadBits(n > 32 ? 32 : n); n -= 32; }
-            break;
-          }
+        case kQAngleFixedBits:
           for (int i = 0; i < 3; ++i) value.v[i] = ReadAngle(bits, bits_);
           break;
-        }
         case kQAngleCoord: {
           const bool has_pitch = bits->ReadBit();
           const bool has_yaw = bits->ReadBit();
@@ -593,30 +590,7 @@ bool EntityDecoder::ApplyUpdate(Entity* entity, BitReader* bits, bool trace,
                             "> in " + flat->second.name);
     }
     const std::size_t at = bits->BitsConsumed();
-    // EXPERIMENT: dump the raw bits around fields whose name contains a
-    // given substring, in every packet, to establish an encoding.
-    static const char* watch = std::getenv("CS2MV_WATCH");
-    static int watch_more = 0;
-    if (watch != nullptr && (name.find(watch) != std::string::npos || watch_more > 0)) {
-      if (name.find(watch) != std::string::npos) watch_more = 3; else --watch_more;
-      BitReader peek = *bits;
-      std::string raw;
-      for (int i = 0; i < 128 && peek.ok(); ++i) raw.push_back(peek.ReadBit() ? '1' : '0');
-      std::printf("WATCH pkt %lld entity %d %s @%zu <%s> %s\n", packets_seen_, entity->index,
-                  name.c_str(), at, decoder->description().c_str(), raw.c_str());
-    }
-    // EXPERIMENT: read one bit less for a named field.
-    static const char* shrink = std::getenv("CS2MV_SHRINK");
-    FieldValue decoded;
-    if (shrink != nullptr && name == shrink) {
-      BitReader before = *bits;
-      decoded = decoder->Decode(bits);
-      const std::size_t consumed = bits->BitsConsumed() - before.BitsConsumed();
-      *bits = before;
-      for (std::size_t i = 0; i + 1 < consumed; ++i) bits->ReadBit();
-    } else {
-      decoded = decoder->Decode(bits);
-    }
+    const FieldValue decoded = decoder->Decode(bits);
     if (trace) {
       char text[128];
       switch (decoded.kind) {
@@ -695,22 +669,11 @@ bool EntityDecoder::ApplyPacket(const std::string& message, std::string* error) 
     }
   }
   if (data.data == nullptr || updated_entries <= 0) return true;
-  ++packets_seen_;
 
   BitReader bits(data.data, data.size);
   int entity_index = -1;
   const bool trace = trace_ > 0;
   if (trace_ > 0) --trace_;
-  if (std::getenv("CS2MV_DUMP_DIR") != nullptr) {
-    // The raw entity data of every packet, for poking at with other tools.
-    static int dumped = 0;
-    const std::string path = std::string(std::getenv("CS2MV_DUMP_DIR")) + "/packet_" +
-                             std::to_string(dumped++) + ".bin";
-    if (FILE* f = std::fopen(path.c_str(), "wb")) {
-      std::fwrite(data.data, 1, data.size, f);
-      std::fclose(f);
-    }
-  }
   if (trace) {
     std::printf("  packet: %d updates, %zu bytes, delta=%d\n", updated_entries,
                 data.size, is_delta ? 1 : 0);

@@ -243,7 +243,6 @@ class EntityDecoder {
   int trace_ = 0;
   long long updates_applied_ = 0;
   long long packets_failed_ = 0;
-  long long packets_seen_ = 0;
 };
 
 }  // namespace cs2mv
