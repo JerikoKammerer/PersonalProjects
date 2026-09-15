@@ -911,9 +911,10 @@ class MatchParser {
     match_->score_t = 0;
     match_->score_ct = 0;
     for (Round& r : match_->rounds) {
+      int t_side = t_player >= 0 ? SideInRound(t_player, r) : kTeamUnknown;
+      if (t_side != kTeamT && t_side != kTeamCT) t_side = kTeamT;
+      r.t_side = t_side;
       if (r.winner == kTeamT || r.winner == kTeamCT) {
-        int t_side = t_player >= 0 ? SideInRound(t_player, r) : kTeamUnknown;
-        if (t_side != kTeamT && t_side != kTeamCT) t_side = kTeamT;
         if (r.winner == t_side) {
           match_->score_t++;
         } else {

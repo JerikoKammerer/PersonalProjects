@@ -892,9 +892,11 @@ int CommandServe(const Options& options) {
       bool signed_in = false;
       std::string account;
       std::string error;
-      if (SteamStatus(resolve.gc_helper, &signed_in, &account, &error)) {
+      std::string steam_id;
+      if (SteamStatus(resolve.gc_helper, &signed_in, &account, &steam_id, &error)) {
         w.Field("signedIn", signed_in);
         w.Field("account", account);
+        w.Field("steamId", steam_id);
         w.Field("detail", std::string());
       } else {
         w.Field("signedIn", false);

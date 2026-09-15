@@ -176,17 +176,29 @@ void SteamLogin::Cancel() {
 }
 
 bool SteamStatus(const std::string& helper_command, bool* signed_in,
-                 std::string* account, std::string* error) {
+                 std::string* account, std::string* steam_id, std::string* error) {
   std::string line;
   if (!RunLine(helper_command + " status", &line, error)) return false;
   if (line.compare(0, 8, "SIGNEDIN") == 0) {
+    // "SIGNEDIN <account> [<steam id>]". Account names carry no spaces, and
+    // the id is seventeen digits, so the last word tells which it is.
     *signed_in = true;
     *account = line.size() > 9 ? line.substr(9) : std::string();
+    steam_id->clear();
+    const std::size_t space = account->rfind(' ');
+    if (space != std::string::npos) {
+      const std::string last = account->substr(space + 1);
+      if (last.size() == 17 && last.find_first_not_of("0123456789") == std::string::npos) {
+        *steam_id = last;
+        account->erase(space);
+      }
+    }
     return true;
   }
   if (line.compare(0, 9, "SIGNEDOUT") == 0) {
     *signed_in = false;
     account->clear();
+    steam_id->clear();
     return true;
   }
   if (error != nullptr) *error = "unexpected helper reply: " + line;

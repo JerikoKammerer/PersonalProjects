@@ -137,6 +137,20 @@ async function loginStream() {
   }
 }
 
+// The 64 bit Steam id inside a refresh token. The token is a JWT whose
+// payload names the account it was issued to; nothing is verified here, it
+// is only read back so the viewer knows which player in a match is you.
+function steamIdOf(token) {
+  try {
+    const payload = token.split('.')[1];
+    const json = Buffer.from(payload.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    const sub = JSON.parse(json).sub;
+    return typeof sub === 'string' && /^\d{17}$/.test(sub) ? sub : '';
+  } catch (_) {
+    return '';
+  }
+}
+
 function status() {
   const token = readToken();
   if (!token) {
@@ -147,7 +161,8 @@ function status() {
   try {
     account = JSON.parse(fs.readFileSync(CONFIG, 'utf8')).accountName || '';
   } catch (_) { /* the token is what matters */ }
-  console.log(`SIGNEDIN ${account}`);
+  const steamId = steamIdOf(token);
+  console.log(`SIGNEDIN ${account}${steamId ? ' ' + steamId : ''}`);
 }
 
 function logout() {

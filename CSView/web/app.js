@@ -4,6 +4,40 @@ const $ = (id) => document.getElementById(id);
 
 let current = null;      // the match payload last loaded
 let currentTarget = '';  // what was typed to load it: a share code or a path
+
+// Which player is you, as a Steam id: chosen by clicking a name in the
+// scoreboard and remembered, or else the signed-in Steam account. Rounds are
+// underlined green or red relative to your team.
+let steamMe = '';        // from /api/steam/status
+function chosenMe() {
+  try { return localStorage.getItem('cs2mv.me') || ''; } catch (_) { return ''; }
+}
+function myId() {
+  return chosenMe() || steamMe;
+}
+function setMe(steamId) {
+  try {
+    if (steamId) localStorage.setItem('cs2mv.me', steamId);
+    else localStorage.removeItem('cs2mv.me');
+  } catch (_) { /* no storage */ }
+}
+function myPlayer() {
+  const id = myId();
+  if (!current || !id) return null;
+  return current.players.find((p) => p.steamId === id) || null;
+}
+function otherSide(team) {
+  return team === TEAM_CT ? TEAM_T : team === TEAM_T ? TEAM_CT : team;
+}
+// Whether your team won `round`: the round's winner is a side, and the side
+// your team was playing that round follows from the side the T team played.
+function myOutcome(round) {
+  const me = myPlayer();
+  if (!me || (me.team !== TEAM_CT && me.team !== TEAM_T)) return '';
+  if (round.winner !== TEAM_CT && round.winner !== TEAM_T) return '';
+  const mySide = me.team === TEAM_T ? round.tSide : otherSide(round.tSide);
+  return round.winner === mySide ? 'won' : 'lost';
+}
 let sortKey = 'kills';
 let sortDesc = true;
 let selectedRound = -1;
@@ -119,6 +153,27 @@ function renderScoreboard() {
         tag.textContent = 'BOT';
         name.appendChild(tag);
       }
+      if (p.steamId && p.steamId !== '0') {
+        const isMe = p.steamId === myId();
+        // Known from the Steam sign-in rather than a click; that one cannot
+        // be unmarked, only overridden by picking someone else.
+        const fromSteam = isMe && !chosenMe();
+        if (isMe) {
+          const tag = document.createElement('span');
+          tag.className = 'you';
+          tag.textContent = 'YOU';
+          name.appendChild(tag);
+        }
+        name.title = fromSteam ? 'This is you, from your Steam sign-in'
+          : isMe ? 'This is you. Click to unmark.' : 'Click if this is you';
+        name.classList.add('pick');
+        name.addEventListener('click', () => {
+          if (fromSteam) return;
+          setMe(isMe ? '' : p.steamId);
+          renderScoreboard();
+          renderRounds();
+        });
+      }
       row.appendChild(name);
       const cells = [
         p.kills, p.deaths, p.assists,
@@ -138,12 +193,19 @@ function renderScoreboard() {
 function renderRounds() {
   const box = $('rounds');
   box.innerHTML = '';
+  const me = myPlayer();
+  $('rounds-hint').textContent = me
+    ? `underlined green when ${me.name || 'you'} won the round, red when not`
+    : 'click your name in the scoreboard to see which rounds you won';
   current.rounds.forEach((round, index) => {
     const el = document.createElement('div');
     el.className = 'round ' + teamClass(round.winner);
+    const outcome = myOutcome(round);
+    if (outcome) el.classList.add(outcome);
     el.textContent = round.number;
     el.title = `${round.winnerName} win — ${round.reasonText || 'round ' + round.number}` +
-               ` (${round.scoreCt}:${round.scoreT})`;
+               ` (${round.scoreCt}:${round.scoreT})` +
+               (outcome ? ` — you ${outcome}` : '');
     el.addEventListener('click', () => {
       selectedRound = selectedRound === index ? -1 : index;
       renderRounds();
@@ -297,6 +359,11 @@ async function steamStatus() {
       $('steam-signin').hidden = true;
       $('steam-signout').hidden = true;
       return;
+    }
+    steamMe = s.signedIn && s.steamId ? s.steamId : '';
+    if (current) {
+      renderScoreboard();
+      renderRounds();
     }
     if (s.signedIn) {
       $('steam-state').innerHTML = 'Steam: <span class="on">signed in' +

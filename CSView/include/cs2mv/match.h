@@ -94,6 +94,9 @@ struct Round {
   // round_end entirely - the authoritative score lives in entity state, which
   // this parser does not decode.
   bool winner_inferred = false;
+  // The side the team that finished on T was playing this round; the other
+  // team played the other side. With `winner`, this says which team won.
+  int t_side = kTeamUnknown;
   // Running score after this round, per team the way the game shows it: the
   // T score belongs to the team that finished the match on T, including the
   // rounds it won as CT before the halftime swap. `winner` is the side.

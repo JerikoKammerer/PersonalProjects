@@ -64,7 +64,7 @@ class SteamLogin {
 // signed-in account name when there is one. Returns false when the helper could
 // not be run at all.
 bool SteamStatus(const std::string& helper_command, bool* signed_in,
-                 std::string* account, std::string* error);
+                 std::string* account, std::string* steam_id, std::string* error);
 
 // Removes the stored refresh token.
 bool SteamLogout(const std::string& helper_command, std::string* error);
