@@ -83,7 +83,8 @@ const char* RoundEndReasonName(int reason);
 
 struct Round {
   int number = 0;             // 1 based
-  int start_tick = 0;
+  int start_tick = 0;         // round_prestart: the freeze time begins
+  int live_tick = 0;          // round_freeze_end: the clock the kill feed uses
   int end_tick = 0;
   int winner = kTeamUnknown;
   int reason = 0;

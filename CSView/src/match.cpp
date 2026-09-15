@@ -119,6 +119,7 @@ void WriteRound(JsonWriter* w, const Round& r) {
   w->BeginObject();
   w->Field("number", r.number);
   w->Field("startTick", r.start_tick);
+  w->Field("liveTick", r.live_tick);
   w->Field("endTick", r.end_tick);
   w->Field("winner", r.winner);
   w->Field("winnerName", TeamName(r.winner));

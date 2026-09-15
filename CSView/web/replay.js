@@ -17,6 +17,21 @@ const ReplayView = (() => {
   const SMOKE_RADIUS = 144;   // units; a CS2 smoke is roughly this wide
   const FIRE_RADIUS = 48;
 
+  // The server names weapons after their entity classes; these are the names
+  // people use. Anything not listed is shown upper-cased.
+  const WEAPON_NAMES = {
+    ak47: 'AK-47', m4a1: 'M4A4', m4a1silencer: 'M4A1-S', awp: 'AWP', ssg08: 'Scout',
+    galilar: 'Galil', famas: 'FAMAS', aug: 'AUG', sg556: 'SG 553', scar20: 'SCAR-20',
+    g3sg1: 'G3SG1', m249: 'M249', negev: 'Negev', mac10: 'MAC-10', mp9: 'MP9', mp7: 'MP7',
+    mp5sd: 'MP5-SD', ump45: 'UMP-45', p90: 'P90', bizon: 'PP-Bizon', nova: 'Nova',
+    xm1014: 'XM1014', mag7: 'MAG-7', sawedoff: 'Sawed-Off', glock: 'Glock', hkp2000: 'P2000',
+    uspsilencer: 'USP-S', p250: 'P250', fiveseven: 'Five-SeveN', tec9: 'Tec-9', cz75a: 'CZ75',
+    deagle: 'Deagle', revolver: 'R8', elite: 'Dual Berettas', knife: 'Knife', taser: 'Zeus',
+    c4: 'C4', hegrenade: 'HE', flashbang: 'Flash', smokegrenade: 'Smoke',
+    molotovgrenade: 'Molotov', incendiarygrenade: 'Incendiary', decoygrenade: 'Decoy',
+  };
+  const weaponName = (key) => WEAPON_NAMES[key] || (key ? key.toUpperCase() : '');
+
   const state = {
     match: null,        // the match payload from /api/match
     target: null,       // what was typed: share code or path
@@ -34,6 +49,7 @@ const ReplayView = (() => {
     byRound: new Map(), // round number -> replay payload
     matchToReplay: new Map(), // match player index -> replay player index
     deaths: [],         // [{tick, x, y, team}] for the selected round
+    clockOffset: 0,     // seconds of freeze time before the round's clock starts
   };
 
   const el = (id) => document.getElementById(id);
@@ -104,6 +120,10 @@ const ReplayView = (() => {
     const last = state.frames.length ? state.frames[state.frames.length - 1][0] : first;
     state.duration = (last - first) / payload.tickRate;
     state.time = 0;
+    // The kill feed's clock starts when freeze time ends, so the replay's
+    // does too; before that it counts down.
+    state.clockOffset = state.round.liveTick > first
+      ? (state.round.liveTick - first) / payload.tickRate : 0;
 
     // Match players and replay players are different lists; Steam ids join
     // them, so kills from the match can be placed on the replay.
@@ -342,7 +362,9 @@ const ReplayView = (() => {
 
     // Clock and slider.
     const clock = el('replay-clock');
-    clock.textContent = `${formatClock(state.time)} / ${formatClock(state.duration)}`;
+    const shown = state.time - state.clockOffset;
+    clock.textContent = (shown < 0 ? `freeze ${formatClock(-shown)}` : formatClock(shown)) +
+      ` / ${formatClock(state.duration - state.clockOffset)}`;
     const seek = el('replay-seek');
     if (document.activeElement !== seek) seek.value = i;
     updateLegend(a);
@@ -458,9 +480,9 @@ const ReplayView = (() => {
       row.classList.toggle('ct', !!s && s[7] === 3);
       row.classList.toggle('t', !!s && s[7] === 2);
       row.querySelector('.hp').textContent = s ? (alive ? `${s[5]}` : '') : '';
-      const weapon = s && s[9] >= 0 ? r.weapons[s[9]] : '';
+      const weapon = s && s[9] >= 0 ? weaponName(r.weapons[s[9]]) : '';
       row.querySelector('.weapon').textContent =
-        alive ? weapon + ((s[8] & FLAG_BOMB) ? ' · C4' : '') : '';
+        alive ? weapon + ((s[8] & FLAG_BOMB) && weapon !== 'C4' ? ' · C4' : '') : '';
     }
   }
 

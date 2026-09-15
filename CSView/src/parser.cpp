@@ -652,7 +652,10 @@ class MatchParser {
 
   // Freeze time is over and the round is live: that is when the clock the kill
   // feed shows should start.
-  void OnRoundLive(const EventArgs&) { round_start_tick_ = tick_; }
+  void OnRoundLive(const EventArgs&) {
+    round_start_tick_ = tick_;
+    current_.live_tick = tick_;
+  }
 
   void OnRoundEnd(const EventArgs& args) {
     const int winner = static_cast<int>(args.Int("winner", kTeamUnknown));
