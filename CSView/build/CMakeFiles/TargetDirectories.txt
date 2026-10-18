@@ -1,0 +1,6 @@
+C:/Users/jerik/.vscode/PersonalProjects/CSView/build/CMakeFiles/cs2mv.dir
+C:/Users/jerik/.vscode/PersonalProjects/CSView/build/CMakeFiles/cs2mv_cli.dir
+C:/Users/jerik/.vscode/PersonalProjects/CSView/build/CMakeFiles/cs2mv_tests.dir
+C:/Users/jerik/.vscode/PersonalProjects/CSView/build/CMakeFiles/test.dir
+C:/Users/jerik/.vscode/PersonalProjects/CSView/build/CMakeFiles/edit_cache.dir
+C:/Users/jerik/.vscode/PersonalProjects/CSView/build/CMakeFiles/rebuild_cache.dir
