@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "cs2mv",
+      "runtimeExecutable": "build\\cs2mv.exe",
+      "runtimeArgs": ["serve", "--port", "8080", "--web", "web"],
+      "port": 8080
+    }
+  ]
+}
