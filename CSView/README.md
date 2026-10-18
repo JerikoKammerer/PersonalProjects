@@ -353,6 +353,64 @@ serves both: against the live server it behaves exactly as before, and against
 files it lists the published matches and hides the parts that need a program -
 Steam sign-in, your own demos, Watch in CS2.
 
+### A custom domain
+
+GitHub will only accept a custom domain that already resolves. It looks the
+name up before it will save it, and `InvalidDNSError - Domain's DNS record
+could not be retrieved` means the lookup came back with nothing: either the
+domain is not registered, or it is registered but its DNS is not yet
+delegated and published. Nothing in this repository can fix that; it is
+settled at the registrar.
+
+The order matters, because each step checks the one before it:
+
+1. **Register the domain.** Check it is really yours and really delegated:
+
+   ```
+   nslookup -type=NS yourdomain.example
+   ```
+
+   Nameservers listed means the registry knows about it. `Non-existent
+   domain` means it is not registered, or has no nameservers set yet - and
+   until that is fixed, GitHub cannot accept it.
+
+2. **Point it at Pages.** For a `www` subdomain, one record:
+
+   | Type  | Name  | Value                   |
+   |-------|-------|-------------------------|
+   | CNAME | `www` | `<user>.github.io.`     |
+
+   The target is the account host - no repository path, and no `https://`.
+   To serve the bare domain as well, add these at the apex (`@`):
+
+   | Type | Value                                                                                     |
+   |------|-------------------------------------------------------------------------------------------|
+   | A    | `185.199.108.153`, `185.199.109.153`, `185.199.110.153`, `185.199.111.153`                  |
+   | AAAA | `2606:50c0:8000::153`, `2606:50c0:8001::153`, `2606:50c0:8002::153`, `2606:50c0:8003::153`  |
+
+3. **Wait for it to resolve**, then confirm from a resolver that is not your
+   own:
+
+   ```
+   nslookup www.yourdomain.example 8.8.8.8
+   ```
+
+   It should answer with `<user>.github.io` and the addresses above.
+
+4. **Then** set it in **Settings -> Pages -> Custom domain**, and set the
+   repository variable `PAGES_CUSTOM_DOMAIN` to the same name so the
+   workflow writes a `CNAME` file into the artifact. A site published by a
+   workflow does not get that file from the Settings page, and without it
+   the domain can be dropped on the next deploy.
+
+5. Tick **Enforce HTTPS** once the certificate has been issued, which takes
+   a few minutes after the domain verifies.
+
+The site moves from `https://<user>.github.io/PersonalProjects/` to the root
+of the domain. Every URL the page uses is relative, so that move needs no
+code change - but `--allow-origin` names an exact origin, so the local
+bridge becomes `cs2mv serve --allow-origin https://www.yourdomain.example`.
+
 ### Using the published site with your own demos
 
 A static site can only show what was published to it, which would make the

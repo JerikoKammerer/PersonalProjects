@@ -48,6 +48,22 @@ jobs:
           fi
           echo "site size: $(du -sh . | cut -f1)"
 
+      # A site published by a workflow does not get a CNAME file from the
+      # Settings page, and without one in the artifact the custom domain can
+      # be dropped on the next deploy. Setting the repository variable
+      # PAGES_CUSTOM_DOMAIN (Settings -> Secrets and variables -> Actions ->
+      # Variables) writes it here instead.
+      #
+      # It is a variable rather than a committed file on purpose: a CNAME for
+      # a domain that does not resolve yet would take the working
+      # github.io address down with it. Register the domain, point its DNS at
+      # GitHub, check it resolves, and only then set the variable.
+      - name: Custom domain
+        if: vars.PAGES_CUSTOM_DOMAIN != ''
+        run: |
+          echo "${{ vars.PAGES_CUSTOM_DOMAIN }}" > CSView/web/CNAME
+          echo "serving at https://${{ vars.PAGES_CUSTOM_DOMAIN }}"
+
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3
