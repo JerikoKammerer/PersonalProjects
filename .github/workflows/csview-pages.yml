@@ -1,0 +1,58 @@
+# Publishes the CS2 match viewer to GitHub Pages.
+#
+# The site is CSView/web as it stands in the repository: the page, its
+# scripts, the radar drawings, and whatever matches have been published into
+# CSView/web/data by `cs2mv publish`. Nothing is compiled here - the C++
+# viewer cannot run on a static host, which is the whole reason publishing
+# writes its answers out as files beforehand.
+name: CSView to Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'CSView/web/**'
+      - '.github/workflows/csview-pages.yml'
+  # So the site can be republished without a code change.
+  workflow_dispatch:
+
+# Read the repository, and mint the token Pages deployment needs.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; let a newer push finish rather than cancelling it,
+# since a half-finished deploy would leave the site stale.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Report what is being published
+        run: |
+          cd CSView/web
+          if [ -f data/index.json ]; then
+            echo "matches published: $(grep -o '"id":' data/index.json | wc -l)"
+          else
+            echo "no data/index.json: the site will load but list no matches."
+            echo "Run: cs2mv publish web/data <share code>"
+          fi
+          echo "site size: $(du -sh . | cut -f1)"
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: CSView/web
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

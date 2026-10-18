@@ -60,6 +60,16 @@ class HttpServer {
   // Directory traversal outside the root is refused.
   void ServeStatic(const std::string& directory) { static_root_ = directory; }
 
+  // Lets one other web origin call this server from a browser.
+  //
+  // Off by default, and deliberately so: this server reads demos off the
+  // disk and can launch CS2, so any page in any tab being able to reach it
+  // would be a poor bargain. Naming an origin is an explicit decision to let
+  // a published copy of the viewer - a GitHub Pages site, say - use the
+  // local one for the things a static site cannot do.
+  void AllowOrigin(const std::string& origin) { allowed_origin_ = origin; }
+  const std::string& allowed_origin() const { return allowed_origin_; }
+
   int port() const { return port_; }
 
   // Percent-decoding, exposed for tests.
@@ -72,6 +82,7 @@ class HttpServer {
 
   std::map<std::string, Handler> routes_;
   std::string static_root_;
+  std::string allowed_origin_;
   long long listen_socket_ = -1;
   int port_ = 0;
   bool running_ = false;

@@ -279,7 +279,26 @@ void HttpServer::HandleConnection(long long socket_handle) {
         request.body.append(chunk, static_cast<std::size_t>(n));
       }
     }
-    BuildResponse(request, &response);
+    // A browser asks permission before sending a cross-origin request, and
+    // Chrome asks again before letting a public page reach a private
+    // address. Both are answered here, for the one origin that is allowed.
+    const auto origin = request.headers.find("origin");
+    const bool cross_origin = origin != request.headers.end() &&
+                              !allowed_origin_.empty() &&
+                              origin->second == allowed_origin_;
+    if (request.method == "OPTIONS") {
+      response.status = cross_origin ? 204 : 403;
+      response.body.clear();
+    } else {
+      BuildResponse(request, &response);
+    }
+    if (cross_origin) {
+      response.extra_headers.emplace_back("Access-Control-Allow-Origin", allowed_origin_);
+      response.extra_headers.emplace_back("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+      response.extra_headers.emplace_back("Access-Control-Allow-Headers", "Content-Type");
+      response.extra_headers.emplace_back("Access-Control-Allow-Private-Network", "true");
+      response.extra_headers.emplace_back("Vary", "Origin");
+    }
   }
 
   std::ostringstream out;

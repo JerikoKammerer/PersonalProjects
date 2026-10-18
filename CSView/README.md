@@ -311,6 +311,70 @@ The `/api/watch` endpoint is the one route that starts a program, so unlike the
 read-only routes it refuses a cross-origin caller - a page on the open web can
 POST to loopback, and should not get to launch things here.
 
+## Publishing to GitHub Pages
+
+The viewer is a C++ program that parses a 230 MB demo on demand. GitHub Pages
+runs nothing: it serves files. So the site cannot *be* the viewer, and the
+honest way to put it on a `github.io` address is to do the work beforehand and
+publish the answers.
+
+`cs2mv publish` does exactly that. It parses a match once and writes out the
+same responses the live server would have given, under the same names the page
+asks for:
+
+```
+web/data/index.json                 every published match, newest first
+web/data/<share code>/match.json    the scoreboard, rounds and kill feed
+web/data/<share code>/round-N.json  one round of the 2D replay
+web/data/<share code>/map.png       the walkable-area map
+web/data/<share code>/walked.png    the footprint the radar is fitted against
+```
+
+So:
+
+```
+cs2mv publish web/data CSGO-xxxxx-xxxxx-xxxxx-xxxxx-xxxxx
+git add web/data && git commit -m "publish a match" && git push
+```
+
+The workflow in `.github/workflows/csview-pages.yml` then deploys `CSView/web`
+to Pages on every push that touches it. Turn it on once under **Settings →
+Pages → Source → GitHub Actions**; the site appears at
+`https://<user>.github.io/PersonalProjects/`. Publishing more matches is the
+same two commands, and the catalogue is rebuilt from the matches already there,
+so earlier ones are left alone.
+
+A match costs about 19 MB across roughly 25 files, which Pages serves
+gzipped. That is fine for a few dozen; it is not an archive format.
+
+**The page works out for itself what it is talking to.** A published bundle
+carries `data/index.json` and a live server does not, so one copy of the page
+serves both: against the live server it behaves exactly as before, and against
+files it lists the published matches and hides the parts that need a program -
+Steam sign-in, your own demos, Watch in CS2.
+
+### Using the published site with your own demos
+
+A static site can only show what was published to it, which would make the
+public page useless for the matches you played this evening. It does not have
+to be. Start the viewer locally and name the site as an allowed origin:
+
+```
+cs2mv serve --allow-origin https://<user>.github.io
+```
+
+The published page probes `127.0.0.1` at startup, finds it, and from then on
+published matches still load from files while everything else - any share
+code, Steam sign-in, Watch in CS2 - goes to your own machine. Nobody else is
+affected: they get the published matches, because their browser finds nothing
+listening.
+
+`--allow-origin` is off by default and takes one exact origin. That is
+deliberate. The server reads demos off your disk and can launch CS2, so a
+browser is not allowed to reach it from another page unless you have said
+which page, by name, on the command line. Requests from anywhere else get no
+CORS grant at all and a preflight from them is refused outright.
+
 ## How the demo parsing works
 
 CS2 demos describe a match twice over: as a stream of *game events* (the same

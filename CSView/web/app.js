@@ -69,7 +69,12 @@ async function load(target) {
   setStatus('Loading… (a first-time download can take a while)');
   $('match').hidden = true;
   try {
-    const response = await fetch('/api/match?code=' + encodeURIComponent(target));
+    const url = Backend.matchUrl(target);
+    if (!url) {
+      setStatus(Backend.explain(target), true);
+      return;
+    }
+    const response = await fetch(url);
     const payload = await response.json();
     if (!response.ok) {
       setStatus(payload.error || `request failed with ${response.status}`, true);
@@ -332,11 +337,50 @@ document.querySelectorAll('th[data-sort]').forEach((th) => {
   });
 });
 
-// Deep link support: /?code=CSGO-... opens straight away.
-const initial = new URL(window.location).searchParams.get('code');
-if (initial) {
-  $('code').value = initial;
-  load(initial);
+// Published sites have no server to sign into, no local demos to list, and
+// nothing to hand to CS2 - unless the reader is running cs2mv themselves, in
+// which case all of it comes back.
+function applyMode() {
+  const served = Backend.hasServer();
+  $('steam').hidden = !served;
+  $('recent-fetch').hidden = !served;
+  $('watch-match').hidden = !served;
+  $('watch-note').hidden = !served;
+  $('footer-live').hidden = Backend.isStatic();
+  $('footer-static').hidden = !Backend.isStatic();
+
+  if (Backend.isStatic()) {
+    $('recent-title').textContent = 'Matches on this site';
+    $('recent-hint').textContent = Backend.bridge()
+      ? 'published here — and your own demos, through the cs2mv running on this machine'
+      : 'published to this site; they need no server and stay up';
+    $('code').placeholder = Backend.bridge()
+      ? 'Paste a share code, or pick a match above'
+      : 'Pick a match above, or paste the share code of one';
+  }
+  // The footer tells the reader the exact command to run; it may as well
+  // carry the actual origin rather than a placeholder.
+  for (const el of document.querySelectorAll('.origin-here')) {
+    el.textContent = window.location.origin;
+  }
+  const bridgeNote = $('bridge-note');
+  if (bridgeNote) {
+    bridgeNote.hidden = !(Backend.isStatic() && Backend.bridge());
+  }
+}
+
+async function start() {
+  await Backend.detect();
+  applyMode();
+  if (Backend.hasServer()) steamStatus();
+  loadRecent();
+  
+  // Deep link support: ?code=CSGO-... opens straight away.
+  const initial = new URL(window.location).searchParams.get('code');
+  if (initial) {
+    $('code').value = initial;
+    load(initial);
+  }
 }
 
 // --- Steam sign-in -------------------------------------------------------
@@ -348,7 +392,7 @@ let steamPoll = null;
 
 async function steamStatus() {
   try {
-    const response = await fetch('/api/steam/status');
+    const response = await fetch(Backend.serverUrl('api/steam/status'));
     const s = await response.json();
     const box = $('steam');
     box.hidden = false;
@@ -391,7 +435,7 @@ function escapeHtml(s) {
 async function steamSignIn() {
   $('steam-signin').disabled = true;
   try {
-    const response = await fetch('/api/steam/login', { method: 'POST' });
+    const response = await fetch(Backend.serverUrl('api/steam/login'), { method: 'POST' });
     const body = await response.json();
     if (!response.ok) {
       $('steam-state').textContent = body.error || 'could not start sign-in';
@@ -409,7 +453,7 @@ async function steamSignIn() {
 async function pollSteamLogin() {
   let s;
   try {
-    s = await (await fetch('/api/steam/login/status')).json();
+    s = await (await fetch(Backend.serverUrl('api/steam/login/status'))).json();
   } catch (err) {
     return;
   }
@@ -440,14 +484,13 @@ async function pollSteamLogin() {
 
 async function steamSignOut() {
   if (steamPoll) { clearInterval(steamPoll); steamPoll = null; }
-  await fetch('/api/steam/logout', { method: 'POST' });
+  await fetch(Backend.serverUrl('api/steam/logout'), { method: 'POST' });
   $('steam-qr').hidden = true;
   steamStatus();
 }
 
 $('steam-signin').addEventListener('click', steamSignIn);
 $('steam-signout').addEventListener('click', steamSignOut);
-steamStatus();
 
 // --- Your matches --------------------------------------------------------
 //
@@ -470,10 +513,56 @@ function formatWhen(unix) {
   return then.toLocaleDateString();
 }
 
+// The matches published to this site, which is all a static host has.
+function renderCatalog() {
+  const box = $('recent');
+  const list = $('recent-list');
+  list.innerHTML = '';
+  box.hidden = false;
+
+  const matches = Backend.catalog();
+  if (matches.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'recent-empty';
+    empty.textContent = 'No matches have been published to this site yet.';
+    list.appendChild(empty);
+    return;
+  }
+  for (const m of matches) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'recent-item';
+
+    const map = document.createElement('span');
+    map.className = 'map';
+    map.textContent = m.map || 'unknown map';
+    const score = document.createElement('span');
+    score.className = 'score-mini';
+    score.innerHTML = `<span class="ct">${m.scoreCt}</span>:<span class="t">${m.scoreT}</span>`;
+    const when = document.createElement('span');
+    when.className = 'when';
+    when.textContent = formatWhen(m.date);
+
+    row.appendChild(map);
+    row.appendChild(score);
+    row.appendChild(when);
+    row.title = (m.players || []).map((p) => p.name).join(', ');
+    row.addEventListener('click', () => {
+      $('code').value = m.shareCode || m.id;
+      load(m.shareCode || m.id);
+    });
+    list.appendChild(row);
+  }
+}
+
 async function loadRecent() {
+  if (Backend.isStatic()) {
+    renderCatalog();
+    return;
+  }
   let payload;
   try {
-    payload = await (await fetch('/api/matches')).json();
+    payload = await (await fetch('api/matches')).json();
   } catch (err) {
     return;
   }
@@ -519,7 +608,6 @@ async function loadRecent() {
   }
 }
 
-loadRecent();
 
 // Match history from the game coordinator: everything played recently, not
 // just what happens to be on disk. Needs the signed-in helper, so it is behind
@@ -530,7 +618,7 @@ async function loadRemote() {
   button.disabled = true;
   note.textContent = 'Asking Steam…';
   try {
-    const response = await fetch('/api/matches/remote');
+    const response = await fetch(Backend.serverUrl('api/matches/remote'));
     const payload = await response.json();
     if (!response.ok) {
       note.textContent = payload.error || 'could not reach the game coordinator';
@@ -588,8 +676,9 @@ async function watchInCs2() {
   button.disabled = true;
   note.textContent = 'Handing the demo to CS2…';
   try {
-    const response = await fetch('/api/watch?demo=' + encodeURIComponent(path),
-                                 { method: 'POST' });
+    const response = await fetch(
+        Backend.serverUrl('api/watch?demo=' + encodeURIComponent(path)),
+        { method: 'POST' });
     const body = await response.json();
     note.textContent = response.ok
       ? 'CS2 is opening the demo. Use the round buttons below for the tick to seek to.'
@@ -602,6 +691,8 @@ async function watchInCs2() {
 }
 
 $('watch-match').addEventListener('click', watchInCs2);
+
+start();
 
 // Seeking is a console command rather than a launch argument: playdemo loads
 // asynchronously, so a tick passed at startup is applied before the demo is
