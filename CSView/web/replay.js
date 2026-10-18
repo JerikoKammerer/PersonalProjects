@@ -107,8 +107,9 @@ const ReplayView = (() => {
         'the rest open at once.';
       el('replay-play').disabled = true;
       try {
-        const response = await fetch(
-          `/api/replay?code=${encodeURIComponent(target)}&round=${round.number}`);
+        const url = Backend.replayUrl(target, round.number);
+        if (!url) throw new Error('this round is not available on this site');
+        const response = await fetch(url);
         payload = await response.json();
         if (!response.ok) throw new Error(payload.error || `request failed with ${response.status}`);
       } catch (err) {
@@ -136,7 +137,7 @@ const ReplayView = (() => {
       state.map = image;
       draw();
     };
-    image.src = `/api/replay/map?code=${encodeURIComponent(target)}`;
+    image.src = Backend.mapUrl(target);
   }
 
   // Loads the radar image for the current map, if there is one, and works
@@ -153,15 +154,14 @@ const ReplayView = (() => {
       updateNote();
       return;
     }
-    let footprint = `/api/replay/map?code=${encodeURIComponent(target)}&raw=1`;
-    if (entry.lowerBelow !== undefined) footprint += `&zmin=${entry.lowerBelow}`;
+    const footprint = Backend.walkedUrl(target, entry.lowerBelow);
     const walked = new Image();
     walked.onload = () => {
       if (state.mapTarget !== target) return;
       const image = new Image();
       image.onload = () => fitAndPlace(target, image, entry, walked, r);
       image.onerror = () => { state.radarNote = 'radar image missing'; updateNote(); };
-      image.src = `/maps/${entry.file}`;
+      image.src = `maps/${entry.file}`;
     };
     walked.src = footprint;
   }

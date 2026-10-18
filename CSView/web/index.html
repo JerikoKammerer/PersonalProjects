@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CS2 Match Viewer</title>
-<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
 <header>
@@ -41,7 +41,8 @@
 </header>
 
 <section id="recent" class="recent" hidden>
-  <h3>Your matches <span class="hint">demos CS2 has downloaded on this machine</span></h3>
+  <h3><span id="recent-title">Your matches</span>
+    <span class="hint" id="recent-hint">demos CS2 has downloaded on this machine</span></h3>
   <div id="recent-list" class="recent-list"></div>
   <div class="recent-more">
     <button type="button" id="recent-fetch" class="ghost">Load match history from Steam</button>
@@ -134,7 +135,7 @@
   </section>
 </main>
 
-<footer>
+<footer id="footer-live">
   <p>
     Paste a share code and the viewer finds the demo itself: it searches every
     CS2 replay folder on this machine, across all Steam libraries, and matches
@@ -150,7 +151,31 @@
   </p>
 </footer>
 
-<script src="/replay.js"></script>
-<script src="/app.js"></script>
+<footer id="footer-static" hidden>
+  <p id="bridge-note" hidden>
+    <strong>Connected to the cs2mv on this machine.</strong> Published matches
+    load straight from this site; anything else is parsed locally, so your own
+    demos, Steam sign-in and <em>Watch in CS2</em> all work here too.
+  </p>
+  <p>
+    These matches were published as plain files, so this page needs no server:
+    the scoreboards, round timelines and 2D replays above are read straight
+    from the files beside it and will keep working for as long as the site is
+    up.
+  </p>
+  <p>
+    Opening <em>any</em> share code needs a program that can find and parse the
+    demo, which a static site cannot do. To get that here, run the viewer on
+    your own machine — <code>cs2mv serve --allow-origin
+    <span class="origin-here">this site</span></code> — and reload: this page
+    will find it and use it for everything it does not already have. Building
+    it, and publishing your own matches to a site like this one, is described
+    in the <a href="https://github.com/JerikoKammerer/PersonalProjects/tree/main/CSView#publishing-to-github-pages">README</a>.
+  </p>
+</footer>
+
+<script src="backend.js"></script>
+<script src="replay.js"></script>
+<script src="app.js"></script>
 </body>
 </html>

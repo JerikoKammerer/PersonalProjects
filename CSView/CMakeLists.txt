@@ -29,6 +29,7 @@ add_library(cs2mv STATIC
   src/parser.cpp
   src/png.cpp
   src/protobuf.cpp
+  src/publish.cpp
   src/replay.cpp
   src/entities.cpp
   src/fieldpath.cpp

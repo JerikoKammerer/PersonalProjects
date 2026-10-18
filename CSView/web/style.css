@@ -220,6 +220,11 @@ button.ghost:hover { color: var(--text); filter: none; }
 .recent-item .map { font-weight: 600; }
 .recent-item .when, .recent-item .size { color: var(--muted); font-size: 12px;
                                          font-variant-numeric: tabular-nums; }
+.score-mini { font-variant-numeric: tabular-nums; font-weight: 600; }
+.score-mini .ct { color: var(--ct); }
+.score-mini .t { color: var(--t); }
+.origin-here { font-style: normal; }
+
 .recent-empty { color: var(--muted); font-size: 13px; }
 @media (max-width: 760px) { .recent { margin-left: 1rem; margin-right: 1rem; } }
 .recent-more { margin-top: .75rem; display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; }

@@ -9,6 +9,7 @@
 //   cs2mv inspect <demo.dem>
 //   cs2mv fetch <url> <dest.dem>
 //   cs2mv gc-request <share code>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -28,6 +29,7 @@
 #include "cs2mv/json.h"
 #include "cs2mv/entities.h"
 #include "cs2mv/protobuf.h"
+#include "cs2mv/publish.h"
 #include "cs2mv/replay.h"
 #include "cs2mv/serializers.h"
 #include "cs2mv/sharecode.h"
@@ -45,6 +47,7 @@ struct Options {
   std::string cache_dir;
   std::string index_path;
   std::string gc_helper;
+  std::string allow_origin;
   bool pretty = false;
   bool no_download = false;
 };
@@ -68,6 +71,9 @@ void PrintUsage() {
       "  cs2mv replay <demo file | share code> [frames.json] [map.png]\n"
       "        Build the 2D replay: player positions, grenades, the bomb, and a\n"
       "        map image learnt from where players walked.\n"
+      "  cs2mv publish <output dir> <demo file | share code>...\n"
+      "        Write matches out as plain files, for a web host that can only\n"
+      "        serve files (GitHub Pages). See the README.\n"
       "  cs2mv inspect <demo file>\n"
       "        Report which frames, messages and game events a demo contains.\n"
       "  cs2mv fetch <http URL> <destination.dem>\n"
@@ -80,6 +86,11 @@ void PrintUsage() {
       "  --index FILE   the share code -> demo mapping (default <cache>/index.txt)\n"
       "  --pretty       indent JSON output\n"
       "  --no-download  never fetch over the network\n"
+      "  --allow-origin O  let the published viewer at origin O (for example\n"
+      "                 https://you.github.io) use this server from the browser.\n"
+      "                 Off by default: this server reads demos off the disk and\n"
+      "                 can launch CS2, so it answers only its own page unless\n"
+      "                 explicitly told otherwise.\n"
       "  --gc-helper C  command that turns a share code into a demo URL by asking\n"
       "                 the CS2 game coordinator, for matches CS2 has not already\n"
       "                 downloaded. See tools/steam-gc-helper. Also read from the\n"
@@ -117,6 +128,9 @@ bool ParseFlags(std::vector<std::string>* args, Options* options,
     } else if (a == "--gc-helper") {
       if (!value("--gc-helper")) return false;
       options->gc_helper = (*args)[++i];
+    } else if (a == "--allow-origin") {
+      if (!value("--allow-origin")) return false;
+      options->allow_origin = (*args)[++i];
     } else if (a == "--pretty") {
       options->pretty = true;
     } else if (a == "--no-download") {
@@ -413,6 +427,67 @@ int CommandReplay(const std::vector<std::string>& args, const Options& options) 
     std::cout << "wrote " << args[2] << "\n";
   }
   return 0;
+}
+
+// Publishes matches as static files. Each target is parsed once, both for
+// the scoreboard and for the replay, and written under `out`.
+int CommandPublish(const std::vector<std::string>& args, const Options& options) {
+  if (args.size() < 2) {
+    std::cerr << "usage: cs2mv publish <output dir> <demo file | share code>...\n";
+    return 2;
+  }
+  const std::string out_dir = args[0];
+  int published = 0;
+
+  for (std::size_t i = 1; i < args.size(); ++i) {
+    const std::string& target = args[i];
+    std::cout << "publishing " << target << "\n";
+
+    Match match;
+    std::string demo_path;
+    std::string error;
+    if (!ResolveTarget(target, options, &match, &demo_path, &error)) {
+      std::cerr << "  error: " << error << "\n";
+      continue;
+    }
+    DemoReader reader;
+    if (!reader.Open(demo_path, &error)) {
+      std::cerr << "  error: " << error << "\n";
+      continue;
+    }
+    match.demo_source = demo_path;
+    if (!ParseDemo(&reader, ParseOptions(), &match, &error)) {
+      std::cerr << "  error: " << error << "\n";
+      continue;
+    }
+    // The demo is already in memory; rewind rather than reading it again.
+    reader.Rewind();
+    Replay replay;
+    if (!BuildReplay(&reader, ReplayOptions(), &replay, &error)) {
+      std::cerr << "  error: " << error << "\n";
+      continue;
+    }
+    replay.tick_rate = static_cast<int>(std::lround(1.0 / match.tick_interval));
+
+    std::string id;
+    if (!PublishMatch(match, replay, out_dir, demo_path, &id, &error)) {
+      std::cerr << "  error: " << error << "\n";
+      continue;
+    }
+    std::cout << "  " << match.map_name << " " << match.score_ct << ":" << match.score_t
+              << ", " << match.rounds.size() << " rounds -> " << out_dir << "/" << id
+              << "\n";
+    ++published;
+  }
+
+  std::string error;
+  if (!WriteCatalog(out_dir, &error)) {
+    std::cerr << "error: " << error << "\n";
+    return 1;
+  }
+  std::cout << "\npublished " << published << " of " << (args.size() - 1)
+            << "; catalogue written to " << out_dir << "/index.json\n";
+  return published > 0 ? 0 : 1;
 }
 
 int CommandInspect(const std::vector<std::string>& args) {
@@ -776,6 +851,18 @@ int CommandServe(const Options& options) {
     return 1;
   }
   server.ServeStatic(options.web_root);
+  server.AllowOrigin(options.allow_origin);
+
+  // What a published page probes to find out whether a local server is
+  // running and willing to talk to it.
+  server.Route("/api/health", [](const HttpRequest&, HttpResponse* response) {
+    JsonWriter w;
+    w.BeginObject();
+    w.Field("ok", true);
+    w.Field("app", std::string("cs2mv"));
+    w.EndObject();
+    response->SetJson(w.str());
+  });
 
   server.Route("/api/decode", [](const HttpRequest& request, HttpResponse* response) {
     ShareCode code;
@@ -1013,12 +1100,13 @@ int CommandServe(const Options& options) {
   // Hands a demo to CS2 for playback. This starts a program, so unlike the
   // read-only routes it refuses a cross-origin caller: a page on the open web
   // can POST to loopback, and should not get to launch things here.
-  server.Route("/api/watch", [](const HttpRequest& request,
-                                HttpResponse* response) {
+  server.Route("/api/watch", [&options](const HttpRequest& request,
+                                        HttpResponse* response) {
     auto origin = request.headers.find("origin");
     if (origin != request.headers.end() &&
         origin->second.rfind("http://127.0.0.1:", 0) != 0 &&
-        origin->second.rfind("http://localhost:", 0) != 0) {
+        origin->second.rfind("http://localhost:", 0) != 0 &&
+        !(!options.allow_origin.empty() && origin->second == options.allow_origin)) {
       response->SetError(403, "cross-origin requests cannot start playback");
       return;
     }
@@ -1112,6 +1200,7 @@ int main(int argc, char** argv) {
   if (command == "schema") return CommandSchema(args);
   if (command == "entities") return CommandEntities(args);
   if (command == "replay") return CommandReplay(args, options);
+  if (command == "publish") return CommandPublish(args, options);
   if (command == "baselines") return CommandBaselines(args);
   if (command == "fetch") return CommandFetch(args, options);
   if (command == "gc-request") return CommandGcRequest(args);
